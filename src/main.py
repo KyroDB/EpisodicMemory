@@ -168,15 +168,28 @@ app.state.limiter = limiter
 # Rate limit exceeded handler
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS middleware
-# TODO Phase 1 Week 4: Restrict origins for production (currently wildcard for dev)
+# CORS middleware (configured via environment variables)
+# Production: Set CORS_ALLOWED_ORIGINS="https://app.example.com,https://api.example.com"
+# Development: Defaults to "*" (all origins)
+settings = get_settings()
+cors_origins = settings.cors.origins_list
+
+# Security warning if wildcard is used
+if "*" in cors_origins:
+    logger.warning(
+        "⚠️  CORS allows ALL origins (*) - configure CORS_ALLOWED_ORIGINS for production!"
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=settings.cors.allow_credentials,
+    allow_methods=settings.cors.methods_list,
+    allow_headers=settings.cors.headers_list,
+    max_age=settings.cors.max_age,
 )
+
+logger.info(f"CORS configured: origins={cors_origins}, credentials={settings.cors.allow_credentials}")
 
 # Include routers
 app.include_router(customers_router)

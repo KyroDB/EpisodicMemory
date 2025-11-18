@@ -58,12 +58,17 @@ class KyroDBRouter:
         """
         self.config = config
 
-        # Initialize clients (lazy connection)
+        # Initialize clients (lazy connection) with TLS configuration
         self.text_client = KyroDBClient(
             host=config.text_host,
             port=config.text_port,
             timeout_seconds=config.request_timeout_seconds,
             max_retries=3,
+            enable_tls=config.enable_tls,
+            tls_ca_cert_path=config.tls_ca_cert_path,
+            tls_client_cert_path=config.tls_client_cert_path,
+            tls_client_key_path=config.tls_client_key_path,
+            tls_verify_server=config.tls_verify_server,
         )
 
         self.image_client = KyroDBClient(
@@ -71,6 +76,11 @@ class KyroDBRouter:
             port=config.image_port,
             timeout_seconds=config.request_timeout_seconds,
             max_retries=3,
+            enable_tls=config.enable_tls,
+            tls_ca_cert_path=config.tls_ca_cert_path,
+            tls_client_cert_path=config.tls_client_cert_path,
+            tls_client_key_path=config.tls_client_key_path,
+            tls_verify_server=config.tls_verify_server,
         )
 
         self._text_connected = False

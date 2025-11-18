@@ -39,6 +39,28 @@ class KyroDBConfig(BaseSettings):
     connection_timeout_seconds: int = Field(default=30, ge=1)
     request_timeout_seconds: int = Field(default=60, ge=1)
 
+    # TLS/SSL configuration (Phase 1 Week 4)
+    enable_tls: bool = Field(
+        default=False,
+        description="Enable TLS for KyroDB connections (required for production)"
+    )
+    tls_ca_cert_path: Optional[str] = Field(
+        default=None,
+        description="Path to CA certificate for server verification (None = system CA bundle)"
+    )
+    tls_client_cert_path: Optional[str] = Field(
+        default=None,
+        description="Path to client certificate for mutual TLS (optional)"
+    )
+    tls_client_key_path: Optional[str] = Field(
+        default=None,
+        description="Path to client private key for mutual TLS (optional)"
+    )
+    tls_verify_server: bool = Field(
+        default=True,
+        description="Verify server certificate (disable only for self-signed certs in dev)"
+    )
+
     @property
     def text_address(self) -> str:
         return f"{self.text_host}:{self.text_port}"
@@ -46,6 +68,18 @@ class KyroDBConfig(BaseSettings):
     @property
     def image_address(self) -> str:
         return f"{self.image_host}:{self.image_port}"
+
+    @field_validator("tls_client_cert_path")
+    @classmethod
+    def validate_tls_cert_path(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that if client cert is provided, client key must also be provided."""
+        if v is not None:
+            values = info.data
+            if "tls_client_key_path" in values and values["tls_client_key_path"] is None:
+                raise ValueError(
+                    "tls_client_key_path must be provided when tls_client_cert_path is set (mutual TLS)"
+                )
+        return v
 
 
 class EmbeddingConfig(BaseSettings):
@@ -151,6 +185,54 @@ class ServiceConfig(BaseSettings):
     archive_storage_path: str = Field(default="./data/archive")
 
 
+class CORSConfig(BaseSettings):
+    """CORS configuration for API security (Phase 1 Week 4)."""
+
+    model_config = SettingsConfigDict(env_prefix="CORS_")
+
+    # Allowed origins (comma-separated for multiple origins)
+    allowed_origins: str = Field(
+        default="*",
+        description="Comma-separated list of allowed origins (* for all, ONLY for dev)"
+    )
+    allow_credentials: bool = Field(
+        default=True,
+        description="Allow credentials (cookies, auth headers)"
+    )
+    allowed_methods: str = Field(
+        default="GET,POST,PUT,DELETE,PATCH,OPTIONS",
+        description="Comma-separated list of allowed HTTP methods"
+    )
+    allowed_headers: str = Field(
+        default="*",
+        description="Comma-separated list of allowed headers (* for all)"
+    )
+    max_age: int = Field(
+        default=600,
+        ge=0,
+        description="Preflight cache duration in seconds"
+    )
+
+    @property
+    def origins_list(self) -> list[str]:
+        """Parse comma-separated origins into list."""
+        if self.allowed_origins == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def methods_list(self) -> list[str]:
+        """Parse comma-separated methods into list."""
+        return [method.strip() for method in self.allowed_methods.split(",") if method.strip()]
+
+    @property
+    def headers_list(self) -> list[str]:
+        """Parse comma-separated headers into list."""
+        if self.allowed_headers == "*":
+            return ["*"]
+        return [header.strip() for header in self.allowed_headers.split(",") if header.strip()]
+
+
 class Settings(BaseSettings):
     """Root configuration for Episodic Memory service."""
 
@@ -167,6 +249,7 @@ class Settings(BaseSettings):
     hygiene: HygieneConfig = Field(default_factory=HygieneConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     service: ServiceConfig = Field(default_factory=ServiceConfig)
+    cors: CORSConfig = Field(default_factory=CORSConfig)
 
     def validate_configuration(self) -> None:
         """

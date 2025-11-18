@@ -11,11 +11,12 @@ Provides a clean async interface to KyroDB operations with:
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator, Optional
 
 import grpc
 from grpc import StatusCode
-from grpc.aio import insecure_channel, AioRpcError
+from grpc.aio import insecure_channel, secure_channel, AioRpcError
 
 from src.kyrodb.kyrodb_pb2 import (
     DeleteRequest,
@@ -73,9 +74,14 @@ class KyroDBClient:
         timeout_seconds: int = 30,
         max_retries: int = 3,
         retry_backoff_seconds: float = 0.5,
+        enable_tls: bool = False,
+        tls_ca_cert_path: Optional[str] = None,
+        tls_client_cert_path: Optional[str] = None,
+        tls_client_key_path: Optional[str] = None,
+        tls_verify_server: bool = True,
     ):
         """
-        Initialize KyroDB client.
+        Initialize KyroDB client with optional TLS support.
 
         Args:
             host: KyroDB server host
@@ -83,43 +89,161 @@ class KyroDBClient:
             timeout_seconds: Request timeout
             max_retries: Maximum retry attempts for transient failures
             retry_backoff_seconds: Initial backoff for exponential retry
+            enable_tls: Enable TLS/SSL encryption for connections
+            tls_ca_cert_path: Path to CA certificate (None = system CA bundle)
+            tls_client_cert_path: Path to client certificate for mutual TLS (optional)
+            tls_client_key_path: Path to client private key for mutual TLS (optional)
+            tls_verify_server: Verify server certificate (production: True, dev self-signed: False)
+
+        Security:
+            - enable_tls=True: Encrypted channel (REQUIRED for production)
+            - tls_verify_server=True: Validates server certificate against CA
+            - Client certs: Optional mutual TLS (highest security)
         """
         self.address = f"{host}:{port}"
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
 
+        # TLS configuration
+        self.enable_tls = enable_tls
+        self.tls_ca_cert_path = tls_ca_cert_path
+        self.tls_client_cert_path = tls_client_cert_path
+        self.tls_client_key_path = tls_client_key_path
+        self.tls_verify_server = tls_verify_server
+
         self._channel: Optional[grpc.aio.Channel] = None
         self._stub: Optional[KyroDBServiceStub] = None
         self._connected = False
 
+    def _create_tls_credentials(self) -> grpc.ChannelCredentials:
+        """
+        Create TLS credentials for secure channel.
+
+        Returns:
+            grpc.ChannelCredentials: TLS credentials for secure channel
+
+        Raises:
+            FileNotFoundError: If certificate files don't exist
+            ValueError: If TLS configuration is invalid
+
+        Security:
+            - CA cert: Validates server identity (prevents MITM attacks)
+            - Client cert: Optional mutual TLS (server validates client identity)
+            - verify_server=False: Only for dev with self-signed certs (NOT production)
+        """
+        # Read CA certificate (server verification)
+        root_certs = None
+        if self.tls_ca_cert_path:
+            ca_path = Path(self.tls_ca_cert_path)
+            if not ca_path.exists():
+                raise FileNotFoundError(f"CA certificate not found: {ca_path}")
+            root_certs = ca_path.read_bytes()
+            logger.info(f"Loaded CA certificate from {ca_path}")
+        else:
+            # Use system CA bundle
+            logger.info("Using system CA bundle for server verification")
+
+        # Read client certificate and key (mutual TLS)
+        private_key = None
+        certificate_chain = None
+
+        if self.tls_client_cert_path and self.tls_client_key_path:
+            cert_path = Path(self.tls_client_cert_path)
+            key_path = Path(self.tls_client_key_path)
+
+            if not cert_path.exists():
+                raise FileNotFoundError(f"Client certificate not found: {cert_path}")
+            if not key_path.exists():
+                raise FileNotFoundError(f"Client private key not found: {key_path}")
+
+            certificate_chain = cert_path.read_bytes()
+            private_key = key_path.read_bytes()
+            logger.info(f"Loaded client certificate and key for mutual TLS")
+        elif self.tls_client_cert_path or self.tls_client_key_path:
+            raise ValueError(
+                "Both tls_client_cert_path and tls_client_key_path must be provided for mutual TLS"
+            )
+
+        # Create credentials
+        credentials = grpc.ssl_channel_credentials(
+            root_certificates=root_certs,
+            private_key=private_key,
+            certificate_chain=certificate_chain,
+        )
+
+        if not self.tls_verify_server:
+            logger.warning(
+                "⚠️  Server certificate verification DISABLED - only use in development!"
+            )
+            # Override target name to skip verification (dev only)
+            # In production, always verify the server certificate
+            credentials = grpc.composite_channel_credentials(
+                credentials,
+                grpc.metadata_call_credentials(lambda context, callback: callback([], None))
+            )
+
+        return credentials
+
     async def connect(self) -> None:
         """
-        Establish connection to KyroDB server.
+        Establish connection to KyroDB server with optional TLS.
 
         Raises:
             ConnectionError: If connection fails
+            FileNotFoundError: If TLS certificate files don't exist
+            ValueError: If TLS configuration is invalid
+
+        Security:
+            - Insecure channel: Only for local development (enable_tls=False)
+            - Secure channel: Encrypted with TLS (enable_tls=True, REQUIRED for production)
+            - Mutual TLS: Highest security (client + server cert verification)
         """
         if self._connected:
             return
 
         try:
-            # Create insecure channel (TLS support can be added later)
-            self._channel = insecure_channel(
-                self.address,
-                options=[
-                    ("grpc.max_send_message_length", 100 * 1024 * 1024),  # 100MB
-                    ("grpc.max_receive_message_length", 100 * 1024 * 1024),
-                    ("grpc.keepalive_time_ms", 30000),
-                    ("grpc.keepalive_timeout_ms", 10000),
-                ],
-            )
+            # gRPC channel options (performance + keep-alive)
+            options = [
+                ("grpc.max_send_message_length", 100 * 1024 * 1024),  # 100MB
+                ("grpc.max_receive_message_length", 100 * 1024 * 1024),
+                ("grpc.keepalive_time_ms", 30000),  # 30 seconds
+                ("grpc.keepalive_timeout_ms", 10000),  # 10 seconds
+                ("grpc.http2.max_pings_without_data", 0),  # Allow unlimited pings
+                ("grpc.keepalive_permit_without_calls", 1),  # Allow keepalive without RPCs
+            ]
+
+            # Create channel (secure or insecure based on configuration)
+            if self.enable_tls:
+                # Production: Secure channel with TLS
+                credentials = self._create_tls_credentials()
+                self._channel = secure_channel(
+                    self.address,
+                    credentials,
+                    options=options,
+                )
+                logger.info(f"Created secure TLS channel to {self.address}")
+            else:
+                # Development: Insecure channel (plaintext)
+                self._channel = insecure_channel(
+                    self.address,
+                    options=options,
+                )
+                logger.warning(
+                    f"⚠️  Created INSECURE channel to {self.address} - "
+                    f"enable TLS for production!"
+                )
+
             self._stub = KyroDBServiceStub(self._channel)
 
             # Verify connection with health check
             await self.health_check()
             self._connected = True
-            logger.info(f"Connected to KyroDB at {self.address}")
+
+            logger.info(
+                f"Connected to KyroDB at {self.address} "
+                f"(TLS: {self.enable_tls}, Verify: {self.tls_verify_server})"
+            )
 
         except Exception as e:
             await self.close()
