@@ -48,6 +48,13 @@ from src.observability.logging_middleware import (
     StructuredLoggingMiddleware,
     SlowRequestLogger,
 )
+from src.observability.health import (
+    get_health_checker,
+    HealthCheckResponse,
+    LivenessResponse,
+    ReadinessResponse,
+    HealthStatus,
+)
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
@@ -265,50 +272,162 @@ async def validation_error_handler(request: Request, exc: ValueError):
     )
 
 
-# Health check endpoint
-class HealthResponse(BaseModel):
-    """Health check response."""
+# Health check endpoints (Phase 2 Week 7)
+# Kubernetes-ready liveness, readiness, and comprehensive health checks
 
-    status: str
-    kyrodb_connected: bool
-    embedding_service_ready: bool
-    reflection_service_ready: bool
-
-
-@app.get("/health", response_model=HealthResponse, tags=["System"])
-async def health_check():
+@app.get(
+    "/health/liveness",
+    response_model=LivenessResponse,
+    tags=["Health"],
+    summary="Liveness probe for Kubernetes",
+    description="Minimal health check to verify service is alive. Always returns 200 unless service is dead.",
+)
+async def liveness_probe():
     """
-    Health check endpoint.
+    Liveness probe for Kubernetes.
 
-    Returns service status and component availability.
-    Also updates Prometheus health metrics for monitoring.
+    This endpoint should ONLY fail if the service is completely dead.
+    It performs no I/O operations and returns almost instantly.
+
+    Use for:
+    - Kubernetes liveness probes
+    - Load balancer health checks
+
+    Performance: <5ms
+
+    Returns:
+        LivenessResponse: Liveness status (always alive)
     """
-    kyrodb_connected = False
-    text_healthy = False
-    image_healthy = False
+    health_checker = get_health_checker()
+    return await health_checker.check_liveness()
 
-    if kyrodb_router:
-        try:
-            # Check both text and image instance health
-            health = await kyrodb_router.health_check()
-            text_healthy = health.get("text", False)
-            image_healthy = health.get("image", False)
-            kyrodb_connected = text_healthy and image_healthy
 
-            # Update Prometheus health metrics
+@app.get(
+    "/health/readiness",
+    response_model=ReadinessResponse,
+    tags=["Health"],
+    summary="Readiness probe for Kubernetes",
+    description="Check if service is ready to accept traffic. Verifies critical dependencies.",
+    status_code=200,
+    responses={
+        200: {"description": "Service is ready"},
+        503: {"description": "Service is not ready"},
+    },
+)
+async def readiness_probe(response: Response):
+    """
+    Readiness probe for Kubernetes.
+
+    Checks critical dependencies:
+    - KyroDB connections (text and image instances)
+    - Customer database connectivity
+    - Embedding service availability
+
+    Use for:
+    - Kubernetes readiness probes
+    - Traffic routing decisions
+
+    Performance: <100ms (includes dependency checks)
+
+    Returns:
+        ReadinessResponse: Readiness status with component details
+        HTTP 200: Service is ready (healthy or degraded)
+        HTTP 503: Service is not ready (unhealthy)
+    """
+    health_checker = get_health_checker()
+
+    # Get customer database
+    customer_db = get_customer_db()
+
+    # Perform readiness check
+    readiness = await health_checker.check_readiness(
+        kyrodb_router=kyrodb_router,
+        customer_db=customer_db,
+        embedding_service=embedding_service,
+    )
+
+    # Update Prometheus health metrics
+    for component in readiness.components:
+        if component.name == "kyrodb":
+            text_healthy = component.metadata.get("text_healthy", False)
+            image_healthy = component.metadata.get("image_healthy", False)
             set_kyrodb_health("text", text_healthy)
             set_kyrodb_health("image", image_healthy)
-        except Exception as e:
-            logger.warning(f"Health check failed: {e}")
-            set_kyrodb_health("text", False)
-            set_kyrodb_health("image", False)
 
-    return HealthResponse(
-        status="healthy" if kyrodb_connected else "degraded",
-        kyrodb_connected=kyrodb_connected,
-        embedding_service_ready=embedding_service is not None,
-        reflection_service_ready=reflection_service is not None,
+    # Set HTTP status code based on readiness
+    if not readiness.ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    logger.debug(
+        "Readiness probe completed",
+        ready=readiness.ready,
+        status=readiness.status.value,
+        num_components=len(readiness.components),
     )
+
+    return readiness
+
+
+@app.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    tags=["Health"],
+    summary="Comprehensive health check",
+    description="Detailed health status of all components. Not for Kubernetes probes (too slow).",
+)
+async def comprehensive_health_check():
+    """
+    Comprehensive health check with all components.
+
+    This endpoint provides detailed health information for:
+    - KyroDB connections (text and image)
+    - Customer database
+    - Embedding service
+    - Reflection service (LLM)
+
+    Use for:
+    - Debugging
+    - Monitoring dashboards
+    - Manual health verification
+
+    NOT recommended for:
+    - Kubernetes probes (use /health/liveness or /health/readiness instead)
+    - High-frequency polling (response is cached for 5 seconds)
+
+    Performance: <200ms (with caching)
+
+    Returns:
+        HealthCheckResponse: Detailed health status with all components
+    """
+    health_checker = get_health_checker()
+
+    # Get customer database
+    customer_db = get_customer_db()
+
+    # Perform comprehensive health check
+    health = await health_checker.check_health(
+        kyrodb_router=kyrodb_router,
+        customer_db=customer_db,
+        embedding_service=embedding_service,
+        reflection_service=reflection_service,
+    )
+
+    # Update Prometheus health metrics
+    for component in health.components:
+        if component.name == "kyrodb":
+            text_healthy = component.metadata.get("text_healthy", False)
+            image_healthy = component.metadata.get("image_healthy", False)
+            set_kyrodb_health("text", text_healthy)
+            set_kyrodb_health("image", image_healthy)
+
+    logger.info(
+        "Comprehensive health check completed",
+        status=health.status.value,
+        uptime_seconds=health.uptime_seconds,
+        num_components=len(health.components),
+    )
+
+    return health
 
 
 # Statistics endpoint
