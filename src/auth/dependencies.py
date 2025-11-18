@@ -23,6 +23,11 @@ from cachetools import TTLCache
 
 from src.models.customer import Customer
 from src.storage.database import CustomerDatabase, get_customer_db
+from src.observability.metrics import (
+    track_api_key_cache_hit,
+    track_api_key_cache_miss,
+    track_api_key_validation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +110,10 @@ async def get_authenticated_customer(
         if time.time() < expire_time:
             logger.debug(f"API key cache hit for customer: {customer.customer_id}")
 
+            # Track cache hit (Phase 2 Week 5)
+            track_api_key_cache_hit()
+            track_api_key_validation(duration_seconds=0.001, cache_hit=True)
+
             # Verify customer is still active
             if customer.status != "active":
                 raise HTTPException(
@@ -117,13 +126,22 @@ async def get_authenticated_customer(
             return customer
 
     # Cache miss or expired - validate with database
+    logger.debug("API key cache miss - validating with database")
+    track_api_key_cache_miss()
+
     db = get_customer_db()
 
     start_time = time.perf_counter()
 
     customer = await db.validate_api_key(api_key)
 
-    validation_time_ms = (time.perf_counter() - start_time) * 1000
+    validation_time_seconds = time.perf_counter() - start_time
+    validation_time_ms = validation_time_seconds * 1000
+
+    # Track validation latency (Phase 2 Week 5)
+    track_api_key_validation(
+        duration_seconds=validation_time_seconds, cache_hit=False
+    )
 
     if customer is None:
         logger.warning(

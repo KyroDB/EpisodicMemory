@@ -1,0 +1,88 @@
+# Docker Compose for local observability stack
+#
+# Usage:
+#   docker-compose -f docker-compose.observability.yml up
+#
+# Access:
+#   Prometheus: http://localhost:9090
+#   Grafana: http://localhost:3000 (admin/admin)
+#   EpisodicMemory metrics: http://localhost:8000/metrics
+
+version: '3.8'
+
+services:
+  # Prometheus - Metrics storage and querying
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: episodic-memory-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=90d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - observability
+
+  # Grafana - Metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: episodic-memory-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Phase 2 Week 7: Pre-configured dashboards
+      # - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - observability
+
+  # AlertManager - Alert routing and notifications (Phase 2 Week 7)
+  # alertmanager:
+  #   image: prom/alertmanager:latest
+  #   container_name: episodic-memory-alertmanager
+  #   ports:
+  #     - "9093:9093"
+  #   volumes:
+  #     - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+  #     - alertmanager_data:/alertmanager
+  #   command:
+  #     - '--config.file=/etc/alertmanager/alertmanager.yml'
+  #     - '--storage.path=/alertmanager'
+  #   restart: unless-stopped
+  #   networks:
+  #     - observability
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  # alertmanager_data:
+  #   driver: local
+
+networks:
+  observability:
+    driver: bridge
+
+# Notes:
+# 1. EpisodicMemory app should be started separately (not in this compose file)
+# 2. Update prometheus.yml target to 'host.docker.internal:8000' on macOS/Windows
+# 3. On Linux, use '--network host' or configure bridge networking
+# 4. Grafana dashboards will be added in Phase 2 Week 7

@@ -14,7 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -36,6 +36,14 @@ from src.kyrodb.router import KyroDBRouter
 from src.models.customer import Customer
 from src.models.episode import EpisodeCreate
 from src.models.search import SearchRequest, SearchResponse
+from src.observability.metrics import (
+    generate_metrics,
+    track_ingestion_credits,
+    track_search_credits,
+    update_customer_quota_usage,
+    set_kyrodb_health,
+)
+from src.observability.middleware import PrometheusMiddleware, ErrorTrackingMiddleware
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
@@ -191,6 +199,12 @@ app.add_middleware(
 
 logger.info(f"CORS configured: origins={cors_origins}, credentials={settings.cors.allow_credentials}")
 
+# Observability middleware (Phase 2 Week 5)
+# Order matters: Prometheus middleware should be outermost to track full request lifecycle
+app.add_middleware(ErrorTrackingMiddleware)
+app.add_middleware(PrometheusMiddleware)
+logger.info("✓ Observability middleware registered (Prometheus + Error tracking)")
+
 # Include routers
 app.include_router(customers_router)
 
@@ -253,15 +267,27 @@ async def health_check():
     Health check endpoint.
 
     Returns service status and component availability.
+    Also updates Prometheus health metrics for monitoring.
     """
     kyrodb_connected = False
+    text_healthy = False
+    image_healthy = False
+
     if kyrodb_router:
         try:
-            # Simple connectivity check via health endpoint
+            # Check both text and image instance health
             health = await kyrodb_router.health_check()
-            kyrodb_connected = health.get("text", False)
+            text_healthy = health.get("text", False)
+            image_healthy = health.get("image", False)
+            kyrodb_connected = text_healthy and image_healthy
+
+            # Update Prometheus health metrics
+            set_kyrodb_health("text", text_healthy)
+            set_kyrodb_health("image", image_healthy)
         except Exception as e:
             logger.warning(f"Health check failed: {e}")
+            set_kyrodb_health("text", False)
+            set_kyrodb_health("image", False)
 
     return HealthResponse(
         status="healthy" if kyrodb_connected else "degraded",
@@ -299,6 +325,40 @@ async def get_stats():
         ingestion_stats=ingestion_stats,
         search_stats=search_stats,
     )
+
+
+# Prometheus metrics endpoint (Phase 2 Week 5)
+@app.get("/metrics", tags=["System"])
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+
+    Returns metrics in Prometheus exposition format for scraping.
+
+    Metrics include:
+    - HTTP request latency (histogram)
+    - HTTP request count (counter)
+    - Active HTTP requests (gauge)
+    - API key cache hit/miss rate
+    - KyroDB operation latency
+    - Episode ingestion counts
+    - Search request counts
+    - Credit usage by customer
+    - Error rates by type
+
+    Configuration:
+        Prometheus scrape_interval: 15s (recommended)
+        Retention: 90 days
+
+    Example Prometheus config:
+        scrape_configs:
+          - job_name: 'episodic-memory'
+            scrape_interval: 15s
+            static_configs:
+              - targets: ['localhost:8000']
+    """
+    metrics_data, content_type = generate_metrics()
+    return Response(content=metrics_data, media_type=content_type)
 
 
 # Ingestion endpoint
@@ -407,6 +467,23 @@ async def capture_episode(
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
+        # Track business metrics (Phase 2 Week 5)
+        track_ingestion_credits(
+            customer_id=customer_id,
+            customer_tier=customer.subscription_tier.value,
+            credits_used=credits_used,
+            has_image=episode_data.screenshot_path is not None,
+            has_reflection=generate_reflection and reflection_service is not None,
+        )
+
+        # Update customer quota gauge
+        update_customer_quota_usage(
+            customer_id=customer_id,
+            customer_tier=customer.subscription_tier.value,
+            credits_used=customer.credits_used_current_month + int(credits_used),
+            monthly_limit=customer.monthly_credit_limit,
+        )
+
         return CaptureResponse(
             episode_id=episode.episode_id,
             collection="failures",  # Only failures collection is supported
@@ -510,6 +587,22 @@ async def search_episodes(
         except Exception as e:
             # Log but don't fail the request if usage tracking fails
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
+
+        # Track business metrics (Phase 2 Week 5)
+        track_search_credits(
+            customer_id=customer_id,
+            customer_tier=customer.subscription_tier.value,
+            credits_used=credits_used,
+            results_returned=response.total_returned,
+        )
+
+        # Update customer quota gauge
+        update_customer_quota_usage(
+            customer_id=customer_id,
+            customer_tier=customer.subscription_tier.value,
+            credits_used=customer.credits_used_current_month + 1,  # Rounded to 1
+            monthly_limit=customer.monthly_credit_limit,
+        )
 
         return response
 
