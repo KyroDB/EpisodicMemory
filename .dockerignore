@@ -1,0 +1,74 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# Examples and scripts (not needed in runtime)
+examples/
+scripts/
+
+# Development files
+.env
+.env.local
+.env.*.local
+
+# Data directories (mounted as volumes)
+data/
+logs/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Kubernetes manifests (not needed in container)
+k8s/
+
+# Grafana dashboards (not needed in container)
+grafana/
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Temporary files
+*.log
+*.tmp
+tmp/
+temp/
