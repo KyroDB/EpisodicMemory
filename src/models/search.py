@@ -36,7 +36,14 @@ class SearchRequest(BaseModel):
     Search request for finding relevant failure episodes.
 
     Supports multi-modal queries and filtering.
+    Multi-tenancy: customer_id is extracted from API key, not user-provided.
     """
+
+    # Multi-tenancy (set by middleware, not user-provided)
+    customer_id: Optional[str] = Field(
+        default=None,
+        description="Customer ID for tenant isolation (set automatically from API key)",
+    )
 
     # Query intent
     goal: str = Field(..., min_length=5, description="Goal/intent to match")

@@ -5,7 +5,8 @@ Routes requests to appropriate KyroDB instances:
 - Text/code embeddings → kyrodb_text (384-dim)
 - Image embeddings → kyrodb_images (512-dim)
 
-Uses namespace for logical collection separation within each instance.
+Multi-tenancy: Uses customer-namespaced collections for data isolation.
+Namespace format: {customer_id}:failures (e.g., "acme-corp:failures")
 """
 
 import logging
@@ -16,6 +17,29 @@ from src.kyrodb.client import KyroDBClient, KyroDBError
 from src.kyrodb.kyrodb_pb2 import SearchResponse
 
 logger = logging.getLogger(__name__)
+
+
+def get_namespaced_collection(customer_id: str, collection: str) -> str:
+    """
+    Generate customer-namespaced collection name for multi-tenancy.
+
+    Args:
+        customer_id: Customer identifier (slug format)
+        collection: Base collection name (e.g., "failures")
+
+    Returns:
+        str: Namespaced collection (e.g., "acme-corp:failures")
+
+    Raises:
+        ValueError: If customer_id is empty
+
+    Example:
+        >>> get_namespaced_collection("acme-corp", "failures")
+        "acme-corp:failures"
+    """
+    if not customer_id:
+        raise ValueError("customer_id is required for namespace isolation")
+    return f"{customer_id}:{collection}"
 
 
 class KyroDBRouter:

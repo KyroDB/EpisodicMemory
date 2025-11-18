@@ -89,7 +89,14 @@ class EpisodeCreate(BaseModel):
     Schema for creating a new episode.
 
     Submitted by the agent during ingestion.
+    Multi-tenancy: customer_id is extracted from API key, not user-provided.
     """
+
+    # Multi-tenancy (set by middleware, not user-provided)
+    customer_id: Optional[str] = Field(
+        default=None,
+        description="Customer ID for tenant isolation (set automatically from API key)",
+    )
 
     # Episode identification
     episode_type: EpisodeType = Field(default=EpisodeType.FAILURE)
@@ -176,6 +183,9 @@ class Episode(BaseModel):
         import json
 
         metadata = {
+            # Multi-tenancy
+            "customer_id": self.create_data.customer_id or "default",
+            # Episode fields
             "episode_type": self.create_data.episode_type.value,
             "error_class": self.create_data.error_class.value,
             "tool": self.create_data.tool_chain[0],  # Primary tool
