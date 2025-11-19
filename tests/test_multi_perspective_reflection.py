@@ -19,7 +19,7 @@ Performance Tests:
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

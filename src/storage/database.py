@@ -16,13 +16,14 @@ Performance features:
 
 import logging
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import timezone, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
 import bcrypt
 
 from src.models.customer import (
+from typing import Union, Optional
     APIKey,
     APIKeyCreate,
     Customer,
@@ -66,7 +67,7 @@ class CustomerDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Connection will be created lazily
-        self._conn: aiosqlite.Connection | None = None
+        self._conn: Optional[aiosqlite.Connection] = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -203,7 +204,7 @@ class CustomerDatabase:
             await self._conn.execute("PRAGMA foreign_keys = ON")
         return self._conn
 
-    async def create_customer(self, customer_create: CustomerCreate) -> Customer | None:
+    async def create_customer(self, customer_create: CustomerCreate) -> Optional[Customer]:
         """
         Create new customer.
 
@@ -224,7 +225,7 @@ class CustomerDatabase:
         }
         quota = tier_quotas.get(customer_create.subscription_tier, 1000)
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         customer = Customer(
             customer_id=customer_create.customer_id,
@@ -234,8 +235,8 @@ class CustomerDatabase:
             status=CustomerStatus.ACTIVE,
             monthly_credit_limit=quota,
             credits_used_current_month=0,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
 
         conn = await self._get_connection()
@@ -279,7 +280,7 @@ class CustomerDatabase:
                 return None
             raise
 
-    async def get_customer(self, customer_id: str) -> Customer | None:
+    async def get_customer(self, customer_id: str) -> Optional[Customer]:
         """
         Get customer by ID.
 
@@ -338,7 +339,7 @@ class CustomerDatabase:
             ),
         )
 
-    async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Customer | None:
+    async def update_customer(self, customer_id: str, update: CustomerUpdate) -> Optional[Customer]:
         """
         Update customer details.
 
@@ -374,7 +375,7 @@ class CustomerDatabase:
             return await self.get_customer(customer_id)
 
         updates.append("updated_at = ?")
-        params.append(datetime.now(UTC).isoformat())
+        params.append(datetime.now(timezone.utc).isoformat())
         params.append(customer_id)
 
         conn = await self._get_connection()
@@ -409,7 +410,7 @@ class CustomerDatabase:
         Performance: Single UPDATE statement, no SELECT needed
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         cursor = await conn.execute(
             """
@@ -436,7 +437,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         cursor = await conn.execute(
             """
@@ -460,7 +461,7 @@ class CustomerDatabase:
         return cursor.rowcount > 0
 
     async def update_customer_stripe_id(
-        self, customer_id: str, stripe_customer_id: str, stripe_subscription_id: str | None = None
+        self, customer_id: str, stripe_customer_id: str, stripe_subscription_id: Optional[str] = None
     ) -> bool:
         """
         Update customer Stripe IDs.
@@ -474,7 +475,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         if stripe_subscription_id:
             cursor = await conn.execute(
@@ -510,7 +511,7 @@ class CustomerDatabase:
         return cursor.rowcount > 0
 
     async def update_customer_payment_failed(
-        self, customer_id: str, failed: bool, failed_at: datetime | None
+        self, customer_id: str, failed: bool, failed_at: Optional[datetime]
     ) -> bool:
         """
         Update customer payment failure status.
@@ -524,7 +525,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         cursor = await conn.execute(
             """
@@ -565,7 +566,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         cursor = await conn.execute(
             """
@@ -593,7 +594,7 @@ class CustomerDatabase:
         customer_id: str,
         billing_cycle_start: datetime,
         billing_cycle_end: datetime,
-        next_invoice_date: datetime | None = None,
+        next_invoice_date: Optional[datetime] = None,
     ) -> bool:
         """
         Update customer billing cycle dates.
@@ -608,7 +609,7 @@ class CustomerDatabase:
             bool: True if successful
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         cursor = await conn.execute(
             """
@@ -666,7 +667,7 @@ class CustomerDatabase:
         key_id = str(uuid.uuid4())
 
         # Calculate expiration
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         expires_at = None
         if api_key_create.expires_in_days:
             expires_at = now + timedelta(days=api_key_create.expires_in_days)
@@ -716,7 +717,7 @@ class CustomerDatabase:
 
         return (plaintext_key, api_key)
 
-    async def validate_api_key(self, plaintext_key: str) -> Customer | None:
+    async def validate_api_key(self, plaintext_key: str) -> Optional[Customer]:
         """
         Validate API key and return associated customer.
 
@@ -760,7 +761,7 @@ class CustomerDatabase:
                 # Found matching key - check expiration
                 if row["expires_at"]:
                     expires_at = datetime.fromisoformat(row["expires_at"])
-                    if datetime.now(UTC) > expires_at:
+                    if datetime.now(timezone.utc) > expires_at:
                         logger.warning(f"API key expired: {row['key_id']}")
                         return None
 
@@ -770,7 +771,7 @@ class CustomerDatabase:
                     return None
 
                 # Update last_used_at
-                now = datetime.now(UTC).isoformat()
+                now = datetime.now(timezone.utc).isoformat()
                 await conn.execute(
                     "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
                     (now, row["key_id"]),
@@ -834,10 +835,10 @@ class CustomerDatabase:
         self,
         action: str,
         resource_type: str,
-        customer_id: str | None = None,
-        resource_id: str | None = None,
-        details: str | None = None,
-        ip_address: str | None = None,
+        customer_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        details: Optional[str] = None,
+        ip_address: Optional[str] = None,
     ) -> None:
         """
         Log audit event for compliance.
@@ -851,7 +852,7 @@ class CustomerDatabase:
             ip_address: IP address of request
         """
         conn = await self._get_connection()
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         await conn.execute(
             """
@@ -872,7 +873,7 @@ class CustomerDatabase:
 
 
 # Global instance
-_db: CustomerDatabase | None = None
+_db: Optional[CustomerDatabase] = None
 
 
 async def get_customer_db() -> CustomerDatabase:

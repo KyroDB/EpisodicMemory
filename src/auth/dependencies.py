@@ -26,6 +26,7 @@ from src.observability.metrics import (
     track_api_key_validation,
 )
 from src.storage.database import get_customer_db
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,8 @@ API_KEY_CACHE = TTLCache(maxsize=1000, ttl=300)  # 5 minutes
 
 async def get_authenticated_customer(
     request: Request,
-    authorization: str | None = Header(None, alias="Authorization"),
-    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> Customer:
     """
     Validate API key and return authenticated customer.

@@ -10,7 +10,7 @@ Provides:
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Union, Any, Optional
 
 
 class SnowflakeIDGenerator:
@@ -100,7 +100,7 @@ class SnowflakeIDGenerator:
 
         self.last_timestamp = timestamp
 
-        # Compose ID: timestamp | machine_id | sequence
+        # Compose ID: Union[timestamp, machine_id] | sequence
         id_value = (
             (timestamp << self.TIMESTAMP_SHIFT)
             | (self.machine_id << self.MACHINE_ID_SHIFT)
@@ -131,7 +131,7 @@ class SnowflakeIDGenerator:
 
 
 # Global generator instance (machine_id=0 for single-machine setup)
-_id_generator: SnowflakeIDGenerator | None = None
+_id_generator: Optional[SnowflakeIDGenerator] = None
 
 
 def initialize_id_generator(machine_id: int = 0) -> None:

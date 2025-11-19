@@ -18,7 +18,7 @@ Designed for <50ms P99 latency (excluding async reflection).
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
@@ -31,6 +31,7 @@ from src.utils.identifiers import (
     hash_error_signature,
 )
 from src.utils.pii_redaction import redact_all
+from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class IngestionPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        reflection_service: MultiPerspectiveReflectionService | None = None,
+        reflection_service: Optional[MultiPerspectiveReflectionService] = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -131,7 +132,7 @@ class IngestionPipeline:
             episode = Episode(
                 create_data=episode_data,
                 episode_id=episode_id,
-                created_at=datetime.now(UTC),
+                created_at=datetime.now(timezone.utc),
                 retrieval_count=0,
                 reflection=None,  # Will be generated async
             )
@@ -200,7 +201,7 @@ class IngestionPipeline:
 
     async def _generate_embeddings(
         self, episode_data: EpisodeCreate
-    ) -> tuple[list[float], list[float] | None]:
+    ) -> tuple[list[float], Optional[list[float]]]:
         """
         Generate text and optional image embeddings.
 
@@ -236,7 +237,7 @@ class IngestionPipeline:
         self,
         episode: Episode,
         text_embedding: list[float],
-        image_embedding: list[float] | None,
+        image_embedding: Optional[list[float]],
         env_hash: str,
         error_sig: str,
     ) -> None:

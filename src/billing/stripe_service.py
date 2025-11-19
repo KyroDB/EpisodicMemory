@@ -12,8 +12,8 @@ Features:
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import timezone, datetime, timedelta
+from typing import Any, Optional
 
 import stripe
 
@@ -138,7 +138,7 @@ class StripeService:
         self,
         customer: Customer,
         tier: SubscriptionTier,
-        payment_method_id: str | None = None,
+        payment_method_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Create subscription for customer.
@@ -343,7 +343,7 @@ class StripeService:
             raise SubscriptionError(f"Failed to cancel subscription: {e}") from e
 
     async def report_usage(
-        self, customer: Customer, credits_used: int, timestamp: datetime | None = None
+        self, customer: Customer, credits_used: int, timestamp: Optional[datetime] = None
     ) -> None:
         """
         Report usage to Stripe for metered billing.
@@ -385,7 +385,7 @@ class StripeService:
                 return
 
             # Report usage
-            usage_timestamp = int((timestamp or datetime.now(UTC)).timestamp())
+            usage_timestamp = int((timestamp or datetime.now(timezone.utc)).timestamp())
 
             stripe.SubscriptionItem.create_usage_record(
                 metered_item.id,
@@ -424,7 +424,7 @@ class StripeService:
         - Mark customer as payment_failed
         - Suspend after grace period
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Mark payment as failed
         await self.customer_db.update_customer_payment_failed(customer.customer_id, True, now)
@@ -499,7 +499,7 @@ class StripeService:
             )
             raise PaymentError(f"Failed to attach payment method: {e}") from e
 
-    def _get_price_id_for_tier(self, tier: SubscriptionTier) -> str | None:
+    def _get_price_id_for_tier(self, tier: SubscriptionTier) -> Optional[str]:
         """Get Stripe price ID for subscription tier."""
         mapping = {
             SubscriptionTier.STARTER: self.config.price_id_starter,
@@ -510,7 +510,7 @@ class StripeService:
 
 
 # Global Stripe service instance
-_stripe_service: StripeService | None = None
+_stripe_service: Optional[StripeService] = None
 
 
 def get_stripe_service(config: StripeConfig, customer_db: CustomerDatabase) -> StripeService:

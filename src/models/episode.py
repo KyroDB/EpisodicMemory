@@ -410,6 +410,64 @@ class EpisodeCreate(BaseModel):
         return v
 
 
+class UsageStats(BaseModel):
+    """
+    Track how often an episode's fix is applied and whether it works.
+
+    Security: All fields validated to prevent stat inflation attacks.
+    """
+
+    total_retrievals: int = Field(
+        default=0,
+        ge=0,
+        description="Total times this episode was retrieved"
+    )
+
+    fix_applied_count: int = Field(
+        default=0,
+        ge=0,
+        description="Times the suggested fix was actually applied"
+    )
+
+    fix_success_count: int = Field(
+        default=0,
+        ge=0,
+        description="Times the fix successfully resolved the issue"
+    )
+
+    fix_failure_count: int = Field(
+        default=0,
+        ge=0,
+        description="Times the fix failed to resolve the issue"
+    )
+
+    @property
+    def fix_success_rate(self) -> float:
+        """Calculate success rate (0.0 to 1.0)."""
+        total_validations = self.fix_success_count + self.fix_failure_count
+        if total_validations == 0:
+            return 0.0
+        return self.fix_success_count / total_validations
+
+    @property
+    def application_rate(self) -> float:
+        """Percentage of retrievals that led to applying the fix."""
+        if self.total_retrievals == 0:
+            return 0.0
+        return self.fix_applied_count / self.total_retrievals
+
+    @field_validator("fix_success_count", "fix_failure_count")
+    @classmethod
+    def validate_success_failure_count(cls, v: int, info) -> int:
+        """Ensure success/failure counts don't exceed applied count."""
+        if info.data.get("fix_applied_count", 0) < v:
+            raise ValueError(
+                f"Success/failure count ({v}) cannot exceed applied count "
+                f"({info.data.get('fix_applied_count', 0)})"
+            )
+        return v
+
+
 class Episode(BaseModel):
     """
     Complete episode with generated reflection and storage metadata.
@@ -430,6 +488,12 @@ class Episode(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     retrieval_count: int = Field(default=0, ge=0, description="Number of times retrieved")
     last_retrieved_at: Optional[datetime] = Field(default=None)
+
+    # Usage tracking (Phase 2: Skills promotion)
+    usage_stats: UsageStats = Field(
+        default_factory=UsageStats,
+        description="Track fix application success rate"
+    )
 
     # Embeddings metadata (stored separately in KyroDB)
     text_embedding_id: Optional[int] = Field(default=None)
@@ -460,6 +524,12 @@ class Episode(BaseModel):
             "timestamp": str(int(self.created_at.timestamp())),
             "retrieval_count": str(self.retrieval_count),
             "archived": str(self.archived),
+            # Usage stats (Phase 2: Skills promotion)
+            "usage_total_retrievals": str(self.usage_stats.total_retrievals),
+            "usage_fix_applied_count": str(self.usage_stats.fix_applied_count),
+            "usage_fix_success_count": str(self.usage_stats.fix_success_count),
+            "usage_fix_failure_count": str(self.usage_stats.fix_failure_count),
+            "usage_fix_success_rate": str(self.usage_stats.fix_success_rate),
             # Store full episode as JSON (for complex queries)
             "episode_json": json.dumps(self.model_dump(mode="json"), default=str),
         }

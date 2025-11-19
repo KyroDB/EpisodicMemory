@@ -21,6 +21,7 @@ from src.models.customer import (
     CustomerUpdate,
 )
 from src.storage.database import CustomerDatabase, get_customer_db
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,9 @@ class APIKeyResponse(BaseModel):
     key_id: str
     customer_id: str
     key_prefix: str  # First 8 chars for display
-    name: str | None
+    name: Optional[str]
     created_at: str
-    expires_at: str | None
+    expires_at: Optional[str]
     is_active: bool
 
 

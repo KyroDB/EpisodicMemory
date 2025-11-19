@@ -16,6 +16,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import CLIPModel, CLIPProcessor
 
 from src.config import EmbeddingConfig
+from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,9 @@ class EmbeddingService:
             config: Embedding configuration
         """
         self.config = config
-        self._text_model: SentenceTransformer | None = None
-        self._clip_model: CLIPModel | None = None
-        self._clip_processor: CLIPProcessor | None = None
+        self._text_model: Optional[SentenceTransformer] = None
+        self._clip_model: Optional[CLIPModel] = None
+        self._clip_processor: Optional[CLIPProcessor] = None
         self._device = self._get_device()
 
         logger.info(f"EmbeddingService initialized (device: {self._device})")
@@ -187,7 +188,7 @@ class EmbeddingService:
         # Code is treated as text (sentence-transformers handles it well)
         return self.embed_text(code)
 
-    def embed_image(self, image_path: str | Path) -> list[float]:
+    def embed_image(self, image_path: Union[str, Path]) -> list[float]:
         """
         Generate image embedding using CLIP.
 
@@ -239,7 +240,7 @@ class EmbeddingService:
 
         return embedding
 
-    def embed_images_batch(self, image_paths: list[str | Path]) -> list[list[float]]:
+    def embed_images_batch(self, image_paths: list[Union[str, Path]]) -> list[list[float]]:
         """
         Generate embeddings for multiple images (batched).
 

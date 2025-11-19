@@ -7,6 +7,7 @@ Uses regex patterns optimized for performance with compilation caching.
 
 import re
 from re import Pattern
+from typing import Union, Optional
 
 # Compile patterns once at module load for performance
 _EMAIL_PATTERN: Pattern = re.compile(

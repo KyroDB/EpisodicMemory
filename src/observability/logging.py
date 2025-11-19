@@ -28,12 +28,13 @@ from contextvars import ContextVar
 
 import structlog
 from structlog.types import EventDict, Processor
+from typing import Optional
 
 # Context variables for request-scoped data
 # These propagate across async boundaries automatically
-request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
-customer_id_var: ContextVar[str | None] = ContextVar("customer_id", default=None)
-trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
+request_id_var: Optional[ContextVar[str]] = ContextVar("request_id", default=None)
+customer_id_var: Optional[ContextVar[str]] = ContextVar("customer_id", default=None)
+trace_id_var: Optional[ContextVar[str]] = ContextVar("trace_id", default=None)
 
 
 # ============================================================================
@@ -343,9 +344,9 @@ class RequestContext:
 
     def __init__(
         self,
-        customer_id: str | None = None,
-        trace_id: str | None = None,
-        request_id: str | None = None,
+        customer_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ):
         """
         Initialize request context.
@@ -459,16 +460,16 @@ def set_trace_id(trace_id: str) -> None:
     trace_id_var.set(trace_id)
 
 
-def get_request_id() -> str | None:
+def get_request_id() -> Optional[str]:
     """Get request ID from current context."""
     return request_id_var.get()
 
 
-def get_customer_id() -> str | None:
+def get_customer_id() -> Optional[str]:
     """Get customer ID from current context."""
     return customer_id_var.get()
 
 
-def get_trace_id() -> str | None:
+def get_trace_id() -> Optional[str]:
     """Get trace ID from current context."""
     return trace_id_var.get()

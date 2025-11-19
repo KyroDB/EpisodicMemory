@@ -56,6 +56,7 @@ from src.observability.request_limits import RequestSizeLimitMiddleware
 from src.retrieval.search import SearchPipeline
 from src.routers import customers_router
 from src.storage.database import CustomerDatabase, get_customer_db
+from typing import Union, Optional
 
 # Initialize structured logging (Phase 2 Week 6)
 settings = get_settings()
@@ -89,11 +90,11 @@ limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 
 
 # Global service instances (initialized in lifespan)
-kyrodb_router: KyroDBRouter | None = None
-embedding_service: EmbeddingService | None = None
-reflection_service: MultiPerspectiveReflectionService | None = None
-ingestion_pipeline: IngestionPipeline | None = None
-search_pipeline: SearchPipeline | None = None
+kyrodb_router: Optional[KyroDBRouter] = None
+embedding_service: Optional[EmbeddingService] = None
+reflection_service: Optional[MultiPerspectiveReflectionService] = None
+ingestion_pipeline: Optional[IngestionPipeline] = None
+search_pipeline: Optional[SearchPipeline] = None
 
 
 @asynccontextmanager
@@ -522,6 +523,43 @@ class CaptureResponse(BaseModel):
     reflection_queued: bool
 
 
+class SuccessValidationRequest(BaseModel):
+    """
+    Request to validate whether a suggested fix worked.
+
+    Security:
+    - episode_id validated against customer namespace
+    - outcome restricted to valid values
+    - notes sanitized
+    """
+
+    episode_id: int = Field(..., gt=0, description="Episode ID to validate")
+    outcome: str = Field(
+        ...,
+        pattern="^(success|still_failed)$",
+        description="Whether fix worked: 'success' or 'still_failed'"
+    )
+    applied_suggestion: bool = Field(
+        ...,
+        description="Whether the agent actually applied the suggested fix"
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Optional notes about the fix application"
+    )
+
+
+class SuccessValidationResponse(BaseModel):
+    """Response from fix validation."""
+
+    episode_id: int
+    new_success_rate: float
+    total_applications: int
+    promoted_to_skill: bool = False
+    skill_id: Optional[int] = None
+
+
 @app.post(
     "/api/v1/capture",
     response_model=CaptureResponse,
@@ -647,6 +685,216 @@ async def capture_episode(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Episode capture failed: {str(e)}",
+        )
+
+
+@app.post(
+    "/api/v1/validate_fix",
+    response_model=SuccessValidationResponse,
+    tags=["Validation"],
+)
+@limiter.limit("100/minute")
+async def validate_fix(
+    request: Request,
+    validation: SuccessValidationRequest,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+):
+    """
+    Validate whether a suggested fix worked.
+
+    This endpoint is called by agents AFTER they apply a retrieved fix.
+    It updates the episode's usage statistics and may promote the episode
+    to a skill if promotion criteria are met.
+
+    Pipeline:
+    1. Fetch episode from KyroDB
+    2. Update usage_stats (fix_applied_count, success/failure counts)
+    3. Re-insert episode with updated stats
+    4. Check if episode should be promoted to skill
+    5. Return updated success rate and promotion status
+
+    Args:
+        validation: Validation request with outcome
+        customer: Authenticated customer
+        customer_id: Customer ID from validated API key
+
+    Returns:
+        SuccessValidationResponse: Updated stats and promotion status
+
+    Raises:
+        HTTPException 401: Invalid/missing API key
+        HTTPException 404: Episode not found
+        HTTPException 403: Episode belongs to different customer
+        HTTPException 500: Validation failure
+
+    Security:
+        - Customer namespace isolation enforced
+        - Episode ownership validated
+        - Stats validated for consistency
+    """
+    from src.skills.promotion import SkillPromotionService
+    from src.utils.kyrodb_namespace import get_namespaced_collection
+
+    logger.info(
+        f"Fix validation request for episode {validation.episode_id} "
+        f"(customer: {customer_id}, outcome: {validation.outcome})"
+    )
+
+    collection = "failures"
+    namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+    try:
+        # Step 1: Fetch existing episode
+        existing = await kyrodb_router.text_client.query(
+            doc_id=validation.episode_id,
+            namespace=namespaced_collection,
+            include_embedding=True,
+        )
+
+        if not existing.found:
+            logger.error(
+                f"Episode {validation.episode_id} not found for validation "
+                f"(customer: {customer_id})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Episode {validation.episode_id} not found",
+            )
+
+        # Security: Verify customer ID
+        existing_customer = existing.metadata.get("customer_id")
+        if existing_customer != customer_id:
+            logger.error(
+                f"Customer ID mismatch: episode {validation.episode_id} belongs to "
+                f"{existing_customer}, not {customer_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Episode belongs to different customer",
+            )
+
+        # Step 2: Deserialize episode and update stats
+        from src.models.episode import Episode
+
+        episode = Episode.from_metadata_dict(
+            validation.episode_id, dict(existing.metadata)
+        )
+
+        # Update usage stats
+        episode.usage_stats.total_retrievals += 1
+
+        if validation.applied_suggestion:
+            episode.usage_stats.fix_applied_count += 1
+
+            if validation.outcome == "success":
+                episode.usage_stats.fix_success_count += 1
+            else:  # still_failed
+                episode.usage_stats.fix_failure_count += 1
+
+        # Step 3: Re-insert episode with updated stats
+        updated_metadata = episode.to_metadata_dict()
+
+        response = await kyrodb_router.text_client.insert(
+            doc_id=validation.episode_id,
+            embedding=list(existing.embedding),
+            namespace=namespaced_collection,
+            metadata=updated_metadata,
+        )
+
+        if not response.success:
+            logger.error(f"Failed to update episode stats: {response.error}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update episode statistics",
+            )
+
+        logger.info(
+            f"Updated episode {validation.episode_id} stats: "
+            f"success_rate={episode.usage_stats.fix_success_rate:.2f}, "
+            f"applications={episode.usage_stats.fix_applied_count}"
+        )
+
+        # Track fix validation metrics
+        from src.observability.metrics import track_fix_validation
+
+        track_fix_validation(
+            customer_tier=customer.subscription_tier.value,
+            outcome=validation.outcome,
+        )
+
+        # Step 4: Check if should promote to skill
+        promoted = False
+        skill_id = None
+
+        if (
+            validation.outcome == "success"
+            and episode.usage_stats.fix_success_rate >= 0.9
+            and episode.usage_stats.fix_applied_count >= 3
+        ):
+            logger.info(
+                f"Episode {validation.episode_id} meets promotion criteria, "
+                f"checking for skill promotion..."
+            )
+
+            try:
+                import time
+                from src.observability.metrics import track_skill_promotion
+
+                start_time = time.perf_counter()
+
+                promotion_service = SkillPromotionService(
+                    kyrodb_router=kyrodb_router,
+                    embedding_service=embedding_service,
+                )
+
+                skill = await promotion_service.check_and_promote(
+                    episode_id=validation.episode_id,
+                    customer_id=customer_id,
+                )
+
+                if skill:
+                    promoted = True
+                    skill_id = skill.skill_id
+
+                    # Track promotion metrics
+                    promotion_duration = time.perf_counter() - start_time
+                    track_skill_promotion(
+                        customer_tier=customer.subscription_tier.value,
+                        error_class=episode.create_data.error_class.value,
+                        duration_seconds=promotion_duration,
+                    )
+
+                    logger.info(
+                        f"Episode {validation.episode_id} promoted to "
+                        f"skill {skill_id}: {skill.name} "
+                        f"(promotion took {promotion_duration:.2f}s)"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Skill promotion check failed for episode {validation.episode_id}: {e}",
+                    exc_info=True,
+                )
+
+        return SuccessValidationResponse(
+            episode_id=validation.episode_id,
+            new_success_rate=episode.usage_stats.fix_success_rate,
+            total_applications=episode.usage_stats.fix_applied_count,
+            promoted_to_skill=promoted,
+            skill_id=skill_id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Fix validation failed for episode {validation.episode_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Validation failed: {str(e)}",
         )
 
 

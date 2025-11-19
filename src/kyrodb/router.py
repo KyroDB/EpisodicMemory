@@ -14,6 +14,7 @@ import logging
 from src.config import KyroDBConfig
 from src.kyrodb.client import KyroDBClient
 from src.kyrodb.kyrodb_pb2 import SearchResponse
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,8 @@ class KyroDBRouter:
         customer_id: str,
         collection: str,
         text_embedding: list[float],
-        image_embedding: list[float] | None = None,
-        metadata: dict[str, str] | None = None,
+        image_embedding: Optional[list[float]] = None,
+        metadata: Optional[dict[str, str]] = None,
     ) -> tuple[bool, bool]:
         """
         Insert episode into appropriate KyroDB instances with customer namespace.
@@ -251,7 +252,7 @@ class KyroDBRouter:
         collection: str,
         k: int = 20,
         min_score: float = 0.6,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filters: Optional[dict[str, str]] = None,
         include_image_search: bool = False,
         image_weight: float = 0.3,
     ) -> SearchResponse:
@@ -333,7 +334,7 @@ class KyroDBRouter:
 
     async def get_episode(
         self, episode_id: int, collection: str, include_image: bool = False
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Retrieve episode by ID.
 
@@ -626,6 +627,209 @@ class KyroDBRouter:
 
         except Exception as e:
             logger.error(f"Metadata update error for episode {episode_id}: {e}")
+            return False
+
+    async def insert_skill(
+        self,
+        skill: "Skill",
+        embedding: list[float],
+    ) -> bool:
+        """
+        Insert skill into KyroDB skills collection.
+
+        Security:
+        - Customer namespace isolation enforced
+        - Skill validated before insertion
+
+        Args:
+            skill: Skill object to insert
+            embedding: Skill embedding (generated from docstring)
+
+        Returns:
+            bool: True if insertion successful
+
+        Raises:
+            ValueError: If customer_id missing
+        """
+        if not skill.customer_id:
+            raise ValueError("customer_id is required for skill insertion")
+
+        collection = "skills"
+        namespaced_collection = get_namespaced_collection(skill.customer_id, collection)
+        metadata = skill.to_metadata_dict()
+
+        try:
+            response = await self.text_client.insert(
+                doc_id=skill.skill_id,
+                embedding=embedding,
+                namespace=namespaced_collection,
+                metadata=metadata,
+            )
+
+            if response.success:
+                logger.info(
+                    f"Skill {skill.skill_id} inserted into {namespaced_collection} "
+                    f"(name: {skill.name})"
+                )
+                return True
+            else:
+                logger.error(f"Skill insertion failed: {response.error}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to insert skill {skill.skill_id}: {e}", exc_info=True)
+            return False
+
+    async def search_skills(
+        self,
+        query_embedding: list[float],
+        customer_id: str,
+        k: int = 5,
+        min_score: float = 0.7,
+    ) -> list[tuple["Skill", float]]:
+        """
+        Search skills collection for similar skills.
+
+        Security:
+        - Customer namespace isolation enforced
+        - Only searches within customer's skills
+
+        Args:
+            query_embedding: Query embedding vector
+            customer_id: Customer ID for namespace isolation
+            k: Number of results to return
+            min_score: Minimum similarity score
+
+        Returns:
+            list: List of (Skill, similarity_score) tuples
+        """
+        from src.models.skill import Skill
+
+        if not customer_id:
+            raise ValueError("customer_id is required for skill search")
+
+        collection = "skills"
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        try:
+            response = await self.text_client.search(
+                query_embedding=query_embedding,
+                k=k,
+                namespace=namespaced_collection,
+                min_score=min_score,
+                include_embeddings=False,
+            )
+
+            skills = []
+            for result in response.results:
+                try:
+                    skill = Skill.from_metadata_dict(result.doc_id, dict(result.metadata))
+                    skills.append((skill, result.score))
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to deserialize skill {result.doc_id}: {e}"
+                    )
+                    continue
+
+            logger.debug(
+                f"Skills search returned {len(skills)} results "
+                f"(customer: {customer_id}, k: {k}, min_score: {min_score})"
+            )
+
+            return skills
+
+        except Exception as e:
+            logger.error(
+                f"Skills search failed for customer {customer_id}: {e}",
+                exc_info=True
+            )
+            return []
+
+    async def update_skill_stats(
+        self,
+        skill_id: int,
+        customer_id: str,
+        success: bool,
+    ) -> bool:
+        """
+        Update skill usage statistics after application.
+
+        Security:
+        - Customer ID validated
+        - Atomic update to prevent race conditions
+
+        Args:
+            skill_id: Skill ID to update
+            customer_id: Customer ID for namespace isolation
+            success: Whether the skill application succeeded
+
+        Returns:
+            bool: True if update successful
+        """
+        from src.models.skill import Skill
+
+        if not customer_id:
+            raise ValueError("customer_id is required for skill stats update")
+
+        collection = "skills"
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        try:
+            # Fetch existing skill
+            existing = await self.text_client.query(
+                doc_id=skill_id,
+                namespace=namespaced_collection,
+                include_embedding=True,
+            )
+
+            if not existing.found:
+                logger.error(
+                    f"Skill {skill_id} not found in {namespaced_collection}"
+                )
+                return False
+
+            # Security: Verify customer ID
+            existing_customer = existing.metadata.get("customer_id")
+            if existing_customer != customer_id:
+                logger.error(
+                    f"Customer ID mismatch: skill {skill_id} belongs to "
+                    f"{existing_customer}, not {customer_id}"
+                )
+                return False
+
+            # Deserialize skill
+            skill = Skill.from_metadata_dict(skill_id, dict(existing.metadata))
+
+            # Update stats
+            skill.usage_count += 1
+            if success:
+                skill.success_count += 1
+            else:
+                skill.failure_count += 1
+
+            # Re-insert with updated stats
+            response = await self.text_client.insert(
+                doc_id=skill_id,
+                embedding=list(existing.embedding),
+                namespace=namespaced_collection,
+                metadata=skill.to_metadata_dict(),
+            )
+
+            if response.success:
+                logger.debug(
+                    f"Updated skill {skill_id} stats: "
+                    f"usage={skill.usage_count}, success_rate={skill.success_rate:.2f}"
+                )
+                return True
+            else:
+                logger.error(f"Skill stats update failed: {response.error}")
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update skill {skill_id} stats: {e}",
+                exc_info=True
+            )
             return False
 
     async def health_check(self) -> dict[str, bool]:

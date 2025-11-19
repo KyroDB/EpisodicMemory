@@ -14,7 +14,7 @@ Optimized for <10-15ms latency per candidate.
 
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 
 from src.models.episode import Episode
 from src.models.search import PreconditionCheckResult
@@ -206,7 +206,7 @@ class PreconditionMatcher:
             return text.split(":", 1)[1].strip().strip("\"'")
         return ""
 
-    def _extract_version(self, text: str) -> str | None:
+    def _extract_version(self, text: str) -> Optional[str]:
         """Extract version number from text (e.g., '1.28.0')."""
         match = re.search(r"\d+\.\d+(?:\.\d+)?", text)
         return match.group(0) if match else None
@@ -240,7 +240,7 @@ class PreconditionMatcher:
 
 
 # Singleton instance
-_matcher: PreconditionMatcher | None = None
+_matcher: Optional[PreconditionMatcher] = None
 
 
 def get_precondition_matcher() -> PreconditionMatcher:

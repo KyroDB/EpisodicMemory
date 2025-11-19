@@ -9,7 +9,7 @@ Handles Stripe webhook events for payment processing:
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 import stripe
 
@@ -17,6 +17,7 @@ from src.billing.stripe_service import StripeService
 from src.config import StripeConfig
 from src.models.customer import SubscriptionTier
 from src.storage.database import CustomerDatabase
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +307,7 @@ class StripeWebhookHandler:
 
         return f"Trial ending notification for {customer_id}"
 
-    async def _get_customer_id_from_stripe_id(self, stripe_customer_id: str) -> str | None:
+    async def _get_customer_id_from_stripe_id(self, stripe_customer_id: str) -> Optional[str]:
         """
         Get internal customer_id from Stripe customer ID.
 
@@ -344,7 +345,7 @@ class StripeWebhookHandler:
 
 
 # Global webhook handler instance
-_webhook_handler: StripeWebhookHandler | None = None
+_webhook_handler: Optional[StripeWebhookHandler] = None
 
 
 def get_webhook_handler(

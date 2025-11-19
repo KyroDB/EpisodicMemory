@@ -10,12 +10,13 @@ Credit costs:
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from enum import Enum
 
 from src.billing.stripe_service import StripeService
 from src.models.customer import Customer
 from src.storage.database import CustomerDatabase
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class UsageTracker:
         UsageType.REFLECTION_GENERATION: 2.0,
     }
 
-    def __init__(self, customer_db: CustomerDatabase, stripe_service: StripeService | None = None):
+    def __init__(self, customer_db: CustomerDatabase, stripe_service: Optional[StripeService] = None):
         """
         Initialize usage tracker.
 
@@ -104,7 +105,7 @@ class UsageTracker:
         if self.stripe_service:
             try:
                 await self.stripe_service.report_usage(
-                    updated_customer, int(credits_used), datetime.now(UTC)
+                    updated_customer, int(credits_used), datetime.now(timezone.utc)
                 )
             except Exception as e:
                 logger.error(
@@ -204,11 +205,11 @@ class QuotaExceededError(Exception):
 
 
 # Global usage tracker instance
-_usage_tracker: UsageTracker | None = None
+_usage_tracker: Optional[UsageTracker] = None
 
 
 def get_usage_tracker(
-    customer_db: CustomerDatabase, stripe_service: StripeService | None = None
+    customer_db: CustomerDatabase, stripe_service: Optional[StripeService] = None
 ) -> UsageTracker:
     """
     Get global usage tracker instance (singleton).

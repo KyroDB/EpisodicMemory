@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 from anthropic import APIConnectionError, APIError, AsyncAnthropic, RateLimitError
 from openai import AsyncOpenAI
@@ -35,6 +35,7 @@ except ImportError:
 
 from src.config import LLMConfig
 from src.models.episode import (
+from typing import Union, Optional
     EpisodeCreate,
     LLMPerspective,
     Reflection,
@@ -252,7 +253,7 @@ Return ONLY valid JSON, no markdown."""
     async def generate_multi_perspective_reflection(
         self,
         episode: EpisodeCreate,
-        max_retries: int | None = None,
+        max_retries: Optional[int] = None,
     ) -> Reflection:
         """
         Generate reflection using available LLM models in parallel.
@@ -365,7 +366,7 @@ Return ONLY valid JSON, no markdown."""
                 / len(perspectives),
                 confidence_score=consensus.consensus_confidence,
                 llm_model="multi-perspective",
-                generated_at=datetime.now(UTC),
+                generated_at=datetime.now(timezone.utc),
                 cost_usd=cost_usd,
                 generation_latency_ms=latency_ms,
             )
@@ -463,7 +464,7 @@ Return ONLY valid JSON, no markdown."""
 
     async def _call_gpt4(
         self, user_prompt: str, max_retries: int
-    ) -> LLMPerspective | None:
+    ) -> Optional[LLMPerspective]:
         """Call GPT-4 with retry logic and validation."""
         for attempt in range(max_retries):
             try:
@@ -509,7 +510,7 @@ Return ONLY valid JSON, no markdown."""
 
     async def _call_claude(
         self, user_prompt: str, max_retries: int
-    ) -> LLMPerspective | None:
+    ) -> Optional[LLMPerspective]:
         """Call Claude with retry logic and validation."""
         for attempt in range(max_retries):
             try:
@@ -558,7 +559,7 @@ Return ONLY valid JSON, no markdown."""
 
     async def _call_gemini(
         self, user_prompt: str, max_retries: int
-    ) -> LLMPerspective | None:
+    ) -> Optional[LLMPerspective]:
         """Call Gemini with retry logic and validation."""
         for attempt in range(max_retries):
             try:
@@ -679,7 +680,7 @@ Return ONLY valid JSON, no markdown."""
             agreed_resolution=best_resolution,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
         )
 
     def _merge_list_fields(self, lists: list[list[str]]) -> list[str]:
@@ -757,7 +758,7 @@ Return ONLY valid JSON, no markdown."""
             generalization_score=0.3,
             confidence_score=0.4,  # Low confidence for heuristic
             llm_model="fallback_heuristic",
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
             cost_usd=0.0,  # Free
             generation_latency_ms=0.0,
         )

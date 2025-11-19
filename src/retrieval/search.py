@@ -14,7 +14,7 @@ Designed for <50ms P99 latency.
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
@@ -22,6 +22,7 @@ from src.models.episode import Episode
 from src.models.search import SearchRequest, SearchResponse, SearchResult
 from src.retrieval.preconditions import PreconditionMatcher
 from src.retrieval.ranking import EpisodeRanker
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,8 @@ class SearchPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        precondition_matcher: PreconditionMatcher | None = None,
-        ranker: EpisodeRanker | None = None,
+        precondition_matcher: Optional[PreconditionMatcher] = None,
+        ranker: Optional[EpisodeRanker] = None,
     ):
         """
         Initialize search pipeline.
@@ -146,7 +147,7 @@ class SearchPipeline:
                 breakdown=latency_breakdown,
                 collection=request.collection,
                 query_embedding_dimension=len(query_embedding),
-                searched_at=datetime.now(UTC),
+                searched_at=datetime.now(timezone.utc),
             )
 
             logger.info(
@@ -352,7 +353,7 @@ class SearchPipeline:
             precondition_scores=precondition_scores,
             matched_preconditions_list=matched_preconditions_list,
             weights=request.ranking_weights,
-            current_time=datetime.now(UTC),
+            current_time=datetime.now(timezone.utc),
         )
 
         return ranked_results

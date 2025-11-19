@@ -8,7 +8,7 @@ Provides shared fixtures for:
 - FastAPI test client
 """
 
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -133,7 +133,7 @@ def sample_episode(sample_episode_create: EpisodeCreate) -> Episode:
         create_data=sample_episode_create,
         episode_id=1234567890,
         reflection=reflection,
-        created_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
         retrieval_count=0,
     )
 

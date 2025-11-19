@@ -7,7 +7,7 @@ Uses Pydantic Settings for type-safe configuration with multiple sources:
 - Defaults (lowest priority)
 """
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,14 +44,14 @@ class KyroDBConfig(BaseSettings):
     enable_tls: bool = Field(
         default=False, description="Enable TLS for KyroDB connections (required for production)"
     )
-    tls_ca_cert_path: str | None = Field(
+    tls_ca_cert_path: Optional[str] = Field(
         default=None,
         description="Path to CA certificate for server verification (None = system CA bundle)",
     )
-    tls_client_cert_path: str | None = Field(
+    tls_client_cert_path: Optional[str] = Field(
         default=None, description="Path to client certificate for mutual TLS (optional)"
     )
-    tls_client_key_path: str | None = Field(
+    tls_client_key_path: Optional[str] = Field(
         default=None, description="Path to client private key for mutual TLS (optional)"
     )
     tls_verify_server: bool = Field(
@@ -69,7 +69,7 @@ class KyroDBConfig(BaseSettings):
 
     @field_validator("tls_client_cert_path")
     @classmethod
-    def validate_tls_cert_path(cls, v: str | None, info) -> str | None:
+    def validate_tls_cert_path(cls, v: Optional[str], info) -> Optional[str]:
         """Validate that if client cert is provided, client key must also be provided."""
         if v is not None:
             values = info.data
@@ -428,22 +428,22 @@ class StripeConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="STRIPE_")
 
-    api_key: str | None = Field(
+    api_key: Optional[str] = Field(
         default=None, description="Stripe secret API key (sk_live_... or sk_test_...)"
     )
-    webhook_secret: str | None = Field(
+    webhook_secret: Optional[str] = Field(
         default=None, description="Stripe webhook signing secret (whsec_...)"
     )
-    publishable_key: str | None = Field(
+    publishable_key: Optional[str] = Field(
         default=None, description="Stripe publishable key (pk_live_... or pk_test_...)"
     )
 
     # Subscription tier price IDs (created in Stripe dashboard)
-    price_id_starter: str | None = Field(
+    price_id_starter: Optional[str] = Field(
         default=None, description="Stripe price ID for Starter tier"
     )
-    price_id_pro: str | None = Field(default=None, description="Stripe price ID for Pro tier")
-    price_id_enterprise: str | None = Field(
+    price_id_pro: Optional[str] = Field(default=None, description="Stripe price ID for Pro tier")
+    price_id_enterprise: Optional[str] = Field(
         default=None, description="Stripe price ID for Enterprise tier"
     )
 
@@ -457,7 +457,7 @@ class StripeConfig(BaseSettings):
     enable_metered_billing: bool = Field(
         default=False, description="Enable usage-based metered billing (credits)"
     )
-    metered_price_id: str | None = Field(
+    metered_price_id: Optional[str] = Field(
         default=None, description="Stripe price ID for metered usage (credits)"
     )
 
@@ -518,7 +518,7 @@ class Settings(BaseSettings):
 
 
 # Global settings instance (lazy-loaded)
-_settings: Settings | None = None
+_settings: Optional[Settings] = None
 
 
 def get_settings() -> Settings:

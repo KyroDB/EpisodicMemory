@@ -24,6 +24,7 @@ Integration:
 """
 
 from prometheus_client import (
+from typing import Optional
     CONTENT_TYPE_LATEST,
     REGISTRY,
     Counter,
@@ -551,7 +552,7 @@ def track_reflection_generation(
     cost_usd: float,
     confidence: float,
     success: bool,
-    model_costs: dict[str, float] | None = None,
+    model_costs: Optional[dict[str, float]] = None,
 ) -> None:
     """
     Track reflection generation metrics.
@@ -604,7 +605,7 @@ def track_reflection_generation(
 def track_llm_call(
     model_name: str,
     success: bool,
-    duration_seconds: float | None = None,
+    duration_seconds: Optional[float] = None,
 ) -> None:
     """
     Track individual LLM API call.
@@ -657,6 +658,155 @@ def increment_active_reflections() -> None:
 def decrement_active_reflections() -> None:
     """Decrement active reflection generations counter."""
     reflection_generations_active.dec()
+
+
+# ============================================================================
+# SKILLS LIBRARY METRICS
+# ============================================================================
+
+skill_promotions_total = Counter(
+    "episodic_memory_skill_promotions_total",
+    "Total number of episodes promoted to skills",
+    labelnames=["customer_tier", "error_class"],
+)
+
+skill_promotion_duration_seconds = Histogram(
+    "episodic_memory_skill_promotion_duration_seconds",
+    "Time taken to check and promote skill",
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0),
+)
+
+skill_searches_total = Counter(
+    "episodic_memory_skill_searches_total",
+    "Total number of skill searches",
+    labelnames=["customer_tier"],
+)
+
+skill_applications_total = Counter(
+    "episodic_memory_skill_applications_total",
+    "Total number of times skills were applied",
+    labelnames=["skill_id", "success"],
+)
+
+fix_validations_total = Counter(
+    "episodic_memory_fix_validations_total",
+    "Total number of fix validations",
+    labelnames=["customer_tier", "outcome"],
+)
+
+skill_success_rate_gauge = Gauge(
+    "episodic_memory_skill_success_rate",
+    "Success rate of individual skills",
+    labelnames=["skill_id", "skill_name"],
+)
+
+promoted_skills_total = Gauge(
+    "episodic_memory_promoted_skills_total",
+    "Total number of active skills per customer",
+    labelnames=["customer_tier"],
+)
+
+
+def track_skill_promotion(
+    customer_tier: str,
+    error_class: str,
+    duration_seconds: float,
+) -> None:
+    """
+    Track skill promotion event.
+
+    Args:
+        customer_tier: Customer subscription tier
+        error_class: Error classification
+        duration_seconds: Time taken for promotion
+    """
+    skill_promotions_total.labels(
+        customer_tier=customer_tier,
+        error_class=error_class,
+    ).inc()
+
+    skill_promotion_duration_seconds.observe(duration_seconds)
+
+
+def track_skill_search(customer_tier: str) -> None:
+    """
+    Track skill search event.
+
+    Args:
+        customer_tier: Customer subscription tier
+    """
+    skill_searches_total.labels(
+        customer_tier=customer_tier,
+    ).inc()
+
+
+def track_skill_application(
+    skill_id: int,
+    success: bool,
+) -> None:
+    """
+    Track skill application event.
+
+    Args:
+        skill_id: ID of skill that was applied
+        success: Whether application succeeded
+    """
+    skill_applications_total.labels(
+        skill_id=str(skill_id),
+        success="true" if success else "false",
+    ).inc()
+
+
+def track_fix_validation(
+    customer_tier: str,
+    outcome: str,
+) -> None:
+    """
+    Track fix validation event.
+
+    Args:
+        customer_tier: Customer subscription tier
+        outcome: Validation outcome (success or still_failed)
+    """
+    fix_validations_total.labels(
+        customer_tier=customer_tier,
+        outcome=outcome,
+    ).inc()
+
+
+def update_skill_success_rate(
+    skill_id: int,
+    skill_name: str,
+    success_rate: float,
+) -> None:
+    """
+    Update skill success rate gauge.
+
+    Args:
+        skill_id: Skill ID
+        skill_name: Skill name (for label)
+        success_rate: Current success rate (0.0 to 1.0)
+    """
+    skill_success_rate_gauge.labels(
+        skill_id=str(skill_id),
+        skill_name=skill_name[:50],  # Truncate for label
+    ).set(success_rate)
+
+
+def update_promoted_skills_count(
+    customer_tier: str,
+    count: int,
+) -> None:
+    """
+    Update total promoted skills count for tier.
+
+    Args:
+        customer_tier: Customer subscription tier
+        count: Total number of active skills
+    """
+    promoted_skills_total.labels(
+        customer_tier=customer_tier,
+    ).set(count)
 
 
 # ============================================================================

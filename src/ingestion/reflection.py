@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from src.config import LLMConfig
 from src.models.episode import EpisodeCreate, Reflection
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ Focus on actionable insights that help match future similar failures."""
         self,
         episode: EpisodeCreate,
         max_retries: int = 3,
-    ) -> Reflection | None:
+    ) -> Optional[Reflection]:
         """
         Generate reflection for an episode using LLM.
 

@@ -58,7 +58,7 @@ class WebhookSigner:
     def sign_payload(
         self,
         payload: str,
-        timestamp: int | None = None,
+        timestamp: Optional[int] = None,
     ) -> tuple[str, int]:
         """
         Sign webhook payload with HMAC-SHA256.
@@ -102,7 +102,7 @@ class WebhookSigner:
         payload: str,
         signature: str,
         timestamp: int,
-        tolerance_seconds: int | None = None,
+        tolerance_seconds: Optional[int] = None,
     ) -> bool:
         """
         Verify webhook signature.
@@ -160,7 +160,7 @@ class WebhookSigner:
     def create_headers(
         self,
         payload: str,
-        timestamp: int | None = None,
+        timestamp: Optional[int] = None,
     ) -> dict[str, str]:
         """
         Create webhook headers with signature and timestamp.
@@ -217,6 +217,7 @@ from flask import Flask, request, abort
 import hmac
 import hashlib
 import time
+from typing import Optional
 
 app = Flask(__name__)
 WEBHOOK_SECRET = "your-webhook-secret-from-episodicmemory"

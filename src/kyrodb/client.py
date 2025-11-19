@@ -30,6 +30,7 @@ from src.kyrodb.kyrodb_pb2 import (
 )
 from src.kyrodb.kyrodb_pb2_grpc import KyroDBServiceStub
 from src.resilience.circuit_breakers import with_kyrodb_circuit_breaker
+from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +75,9 @@ class KyroDBClient:
         max_retries: int = 3,
         retry_backoff_seconds: float = 0.5,
         enable_tls: bool = False,
-        tls_ca_cert_path: str | None = None,
-        tls_client_cert_path: str | None = None,
-        tls_client_key_path: str | None = None,
+        tls_ca_cert_path: Optional[str] = None,
+        tls_client_cert_path: Optional[str] = None,
+        tls_client_key_path: Optional[str] = None,
         tls_verify_server: bool = True,
     ):
         """
@@ -111,8 +112,8 @@ class KyroDBClient:
         self.tls_client_key_path = tls_client_key_path
         self.tls_verify_server = tls_verify_server
 
-        self._channel: grpc.aio.Channel | None = None
-        self._stub: KyroDBServiceStub | None = None
+        self._channel: Optional[grpc.aio.Channel] = None
+        self._stub: Optional[KyroDBServiceStub] = None
         self._connected = False
 
     def _create_tls_credentials(self) -> grpc.ChannelCredentials:
@@ -334,7 +335,7 @@ class KyroDBClient:
         doc_id: int,
         embedding: list[float],
         namespace: str = "",
-        metadata: dict[str, str] | None = None,
+        metadata: Optional[dict[str, str]] = None,
     ) -> InsertResponse:
         """
         Insert a document with embedding into KyroDB.
@@ -367,7 +368,7 @@ class KyroDBClient:
         namespace: str = "",
         min_score: float = -1.0,
         include_embeddings: bool = False,
-        metadata_filters: dict[str, str] | None = None,
+        metadata_filters: Optional[dict[str, str]] = None,
     ) -> SearchResponse:
         """
         k-NN vector similarity search.

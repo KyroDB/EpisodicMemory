@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.billing.usage_tracking import UsageTracker, UsageType
 from src.models.customer import Customer, CustomerStatus
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class QuotaEnforcementMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Get customer from request state (set by auth middleware)
-        customer: Customer | None = getattr(request.state, "customer", None)
+        customer: Optional[Customer] = getattr(request.state, "customer", None)
 
         if not customer:
             # No customer authenticated, let auth middleware handle it

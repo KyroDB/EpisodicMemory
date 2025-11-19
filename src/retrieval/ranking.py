@@ -14,10 +14,11 @@ Optimized for <5ms latency per ranking operation.
 
 import logging
 import math
-from datetime import UTC, datetime
+from datetime import timezone, datetime
 
 from src.models.episode import Episode
 from src.models.search import RankingWeights, SearchResult
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class EpisodeRanker:
         precondition_scores: list[float],
         matched_preconditions_list: list[list[str]],
         weights: RankingWeights,
-        current_time: datetime | None = None,
+        current_time: Optional[datetime] = None,
     ) -> list[SearchResult]:
         """
         Rank episodes by weighted multi-signal scoring.
@@ -86,7 +87,7 @@ class EpisodeRanker:
             ... )
         """
         if current_time is None:
-            current_time = datetime.now(UTC)
+            current_time = datetime.now(timezone.utc)
 
         # Validate input lengths
         expected_len = len(episodes)
@@ -278,7 +279,7 @@ class EpisodeRanker:
 
 
 # Singleton instance
-_ranker: EpisodeRanker | None = None
+_ranker: Optional[EpisodeRanker] = None
 
 
 def get_ranker() -> EpisodeRanker:
