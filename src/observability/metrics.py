@@ -445,6 +445,221 @@ def set_kyrodb_health(instance: str, healthy: bool) -> None:
 
 
 # ============================================================================
+# REFLECTION METRICS (Phase 1 Week 1-2)
+# ============================================================================
+
+# Reflection generation latency (multi-perspective LLM calls)
+reflection_generation_duration_seconds = Histogram(
+    "episodic_memory_reflection_generation_duration_seconds",
+    "Time to generate multi-perspective reflection",
+    labelnames=["consensus_method", "num_models"],
+    buckets=(
+        1.0,  # 1s
+        2.0,  # 2s
+        3.0,  # 3s
+        5.0,  # 5s (typical for 3 models in parallel)
+        7.0,  # 7s
+        10.0,  # 10s
+        15.0,  # 15s
+        30.0,  # 30s (timeout)
+    ),
+)
+
+# Reflection generation count
+reflections_generated_total = Counter(
+    "episodic_memory_reflections_generated_total",
+    "Total reflections generated",
+    labelnames=["consensus_method", "num_models", "success"],
+)
+
+# Reflection cost tracking (critical for budget monitoring)
+reflection_cost_usd_total = Counter(
+    "episodic_memory_reflection_cost_usd_total",
+    "Total LLM costs for reflection generation in USD",
+    labelnames=["model_name"],  # Track cost per LLM provider
+)
+
+# Reflection cost per episode (histogram for distribution)
+reflection_cost_per_episode_usd = Histogram(
+    "episodic_memory_reflection_cost_per_episode_usd",
+    "Cost per reflection in USD",
+    labelnames=["consensus_method"],
+    buckets=(
+        0.001,  # $0.001 (Gemini Flash)
+        0.005,  # $0.005
+        0.010,  # $0.01
+        0.050,  # $0.05 (typical multi-perspective)
+        0.100,  # $0.10
+        0.500,  # $0.50
+        1.000,  # $1.00 (cost limit threshold)
+    ),
+)
+
+# Reflection consensus quality
+reflection_consensus_confidence = Histogram(
+    "episodic_memory_reflection_consensus_confidence",
+    "Consensus confidence score (0.0-1.0)",
+    labelnames=["consensus_method"],
+    buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+
+# LLM model success rate (per provider)
+llm_call_total = Counter(
+    "episodic_memory_llm_call_total",
+    "Total LLM API calls",
+    labelnames=["model_name", "success"],
+)
+
+# LLM call latency (per provider)
+llm_call_duration_seconds = Histogram(
+    "episodic_memory_llm_call_duration_seconds",
+    "Individual LLM API call latency",
+    labelnames=["model_name"],
+    buckets=(0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0),
+)
+
+# Reflection persistence success rate
+reflection_persistence_total = Counter(
+    "episodic_memory_reflection_persistence_total",
+    "Reflection persistence attempts",
+    labelnames=["success"],
+)
+
+# Reflection failure reasons (for debugging)
+reflection_failure_total = Counter(
+    "episodic_memory_reflection_failure_total",
+    "Reflection generation failures",
+    labelnames=["reason"],  # "all_models_failed", "persistence_failed", "exception"
+)
+
+# Active reflection generations (gauge for concurrency monitoring)
+reflection_generations_active = Gauge(
+    "episodic_memory_reflection_generations_active",
+    "Number of in-progress reflection generations",
+)
+
+
+# ============================================================================
+# REFLECTION METRIC TRACKING FUNCTIONS
+# ============================================================================
+
+
+def track_reflection_generation(
+    consensus_method: str,
+    num_models: int,
+    duration_seconds: float,
+    cost_usd: float,
+    confidence: float,
+    success: bool,
+    model_costs: dict[str, float] | None = None,
+) -> None:
+    """
+    Track reflection generation metrics.
+
+    Args:
+        consensus_method: Consensus algorithm used (unanimous, majority_vote, etc.)
+        num_models: Number of LLM models that succeeded
+        duration_seconds: Total generation time
+        cost_usd: Total cost in USD
+        confidence: Consensus confidence score
+        success: Whether generation succeeded
+        model_costs: Optional per-model cost breakdown
+    """
+    # Generation latency
+    reflection_generation_duration_seconds.labels(
+        consensus_method=consensus_method,
+        num_models=str(num_models),
+    ).observe(duration_seconds)
+
+    # Generation count
+    reflections_generated_total.labels(
+        consensus_method=consensus_method,
+        num_models=str(num_models),
+        success="true" if success else "false",
+    ).inc()
+
+    # Cost per episode
+    reflection_cost_per_episode_usd.labels(
+        consensus_method=consensus_method,
+    ).observe(cost_usd)
+
+    # Consensus confidence
+    reflection_consensus_confidence.labels(
+        consensus_method=consensus_method,
+    ).observe(confidence)
+
+    # Per-model cost tracking
+    if model_costs:
+        for model_name, cost in model_costs.items():
+            reflection_cost_usd_total.labels(
+                model_name=model_name,
+            ).inc(cost)
+    else:
+        # Fallback: track total cost under "multi-perspective"
+        reflection_cost_usd_total.labels(
+            model_name="multi-perspective",
+        ).inc(cost_usd)
+
+
+def track_llm_call(
+    model_name: str,
+    success: bool,
+    duration_seconds: float | None = None,
+) -> None:
+    """
+    Track individual LLM API call.
+
+    Args:
+        model_name: LLM model identifier (gpt-4, claude-3.5-sonnet, etc.)
+        success: Whether call succeeded
+        duration_seconds: Optional call duration
+    """
+    llm_call_total.labels(
+        model_name=model_name,
+        success="true" if success else "false",
+    ).inc()
+
+    if duration_seconds is not None:
+        llm_call_duration_seconds.labels(
+            model_name=model_name,
+        ).observe(duration_seconds)
+
+
+def track_reflection_persistence(success: bool) -> None:
+    """
+    Track reflection persistence to KyroDB.
+
+    Args:
+        success: Whether persistence succeeded
+    """
+    reflection_persistence_total.labels(
+        success="true" if success else "false",
+    ).inc()
+
+
+def track_reflection_failure(reason: str) -> None:
+    """
+    Track reflection generation failure.
+
+    Args:
+        reason: Failure reason (all_models_failed, persistence_failed, exception, etc.)
+    """
+    reflection_failure_total.labels(
+        reason=reason,
+    ).inc()
+
+
+def increment_active_reflections() -> None:
+    """Increment active reflection generations counter."""
+    reflection_generations_active.inc()
+
+
+def decrement_active_reflections() -> None:
+    """Decrement active reflection generations counter."""
+    reflection_generations_active.dec()
+
+
+# ============================================================================
 # METRICS ENDPOINT
 # ============================================================================
 

@@ -27,7 +27,7 @@ from src.auth import (
 from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.reflection import ReflectionService
+from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
 from src.kyrodb.client import KyroDBError
 from src.kyrodb.router import KyroDBRouter
 from src.models.customer import Customer
@@ -91,7 +91,7 @@ limiter = Limiter(key_func=get_customer_id_for_rate_limit)
 # Global service instances (initialized in lifespan)
 kyrodb_router: KyroDBRouter | None = None
 embedding_service: EmbeddingService | None = None
-reflection_service: ReflectionService | None = None
+reflection_service: MultiPerspectiveReflectionService | None = None
 ingestion_pipeline: IngestionPipeline | None = None
 search_pipeline: SearchPipeline | None = None
 
@@ -131,13 +131,19 @@ async def lifespan(app: FastAPI):
         embedding_service.warmup()
         logger.info("✓ Embedding models warmed up")
 
-        # Initialize reflection service (optional)
-        if settings.llm.api_key:
-            logger.info("Initializing LLM reflection service...")
-            reflection_service = ReflectionService(config=settings.llm)
-            logger.info("✓ Reflection service initialized")
+        # Initialize multi-perspective reflection service (Phase 1 Week 1-2)
+        if settings.llm.has_any_api_key:
+            logger.info("Initializing multi-perspective LLM reflection service...")
+            reflection_service = MultiPerspectiveReflectionService(config=settings.llm)
+            logger.info(
+                f"✓ Multi-perspective reflection service initialized "
+                f"(providers: {settings.llm.enabled_providers})"
+            )
         else:
-            logger.warning("No LLM API key - reflection generation disabled")
+            logger.warning(
+                "No LLM API keys configured - reflection generation disabled\n"
+                "  Set LLM_OPENAI_API_KEY, LLM_ANTHROPIC_API_KEY, or LLM_GOOGLE_API_KEY"
+            )
             reflection_service = None
 
         # Initialize ingestion pipeline

@@ -6,7 +6,12 @@ Handles end-to-end capture of failure/success episodes:
 2. ID generation
 3. Multi-modal embedding
 4. KyroDB storage
-5. Async reflection generation
+5. Async multi-perspective reflection generation (Phase 1 Week 1-2)
+
+Security:
+- All inputs sanitized before storage
+- Customer ID validated (never user-provided)
+- Reflections validated before persistence
 
 Designed for <50ms P99 latency (excluding async reflection).
 """
@@ -17,7 +22,7 @@ from datetime import UTC, datetime
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
-from src.ingestion.reflection import ReflectionService
+from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode, EpisodeCreate
 from src.utils.identifiers import (
@@ -46,7 +51,7 @@ class IngestionPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        reflection_service: ReflectionService | None = None,
+        reflection_service: MultiPerspectiveReflectionService | None = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -54,7 +59,11 @@ class IngestionPipeline:
         Args:
             kyrodb_router: KyroDB router for dual-instance storage
             embedding_service: Multi-modal embedding service
-            reflection_service: Optional LLM reflection service
+            reflection_service: Optional multi-perspective LLM reflection service
+
+        Security:
+            - All services initialized with validated configs
+            - Customer ID validation enforced at API layer
         """
         self.kyrodb_router = kyrodb_router
         self.embedding_service = embedding_service
@@ -63,6 +72,14 @@ class IngestionPipeline:
         self.settings = get_settings()
         self.total_ingested = 0
         self.total_failures = 0
+
+        if reflection_service:
+            logger.info(
+                f"Reflection service enabled with providers: "
+                f"{reflection_service.config.enabled_providers}"
+            )
+        else:
+            logger.warning("Reflection service disabled - no LLM API keys configured")
 
     async def capture_episode(
         self,
@@ -276,35 +293,136 @@ class IngestionPipeline:
         self, episode_id: int, episode_data: EpisodeCreate
     ) -> None:
         """
-        Generate reflection asynchronously and update KyroDB.
+        Generate multi-perspective reflection and persist to KyroDB.
 
-        This runs in the background after the main ingestion completes.
+        Security:
+        - Episode data validated before LLM call
+        - All LLM outputs validated against schema
+        - Customer ID verified before persistence
+        - Cost limits enforced
+
+        This runs in the background after main ingestion completes,
+        so it doesn't block the /capture API response.
 
         Args:
-            episode_id: Episode ID
-            episode_data: Episode data for reflection
+            episode_id: Episode ID to attach reflection to
+            episode_data: Episode data for reflection generation
+
+        Note:
+            This method does not raise exceptions - all errors are logged.
+            Reflection failures should not cause episode ingestion to fail.
         """
         try:
-            logger.info(f"Generating reflection for episode {episode_id}...")
+            import time
 
-            reflection = await self.reflection_service.generate_reflection(episode_data)
+            logger.info(
+                f"Starting multi-perspective reflection generation for episode {episode_id}..."
+            )
+            start_time = time.perf_counter()
+
+            # Generate multi-perspective reflection (3 models in parallel)
+            reflection = await self.reflection_service.generate_multi_perspective_reflection(
+                episode_data
+            )
+
+            generation_time = time.perf_counter() - start_time
 
             if reflection:
-                # TODO: Update episode in KyroDB with reflection
-                # For now, reflection is generated but not persisted
-                # Phase 2 will add reflection storage and retrieval
+                # CRITICAL: Persist reflection to KyroDB
+                # This fixes the bug where reflections were generated but discarded
                 logger.info(
-                    f"Reflection generated for episode {episode_id} "
-                    f"(confidence: {reflection.confidence_score:.2f})"
+                    f"Persisting reflection to KyroDB for episode {episode_id}..."
                 )
+
+                success = await self.kyrodb_router.update_episode_reflection(
+                    episode_id=episode_id,
+                    customer_id=episode_data.customer_id,
+                    collection="failures",
+                    reflection=reflection,
+                )
+
+                if success:
+                    logger.info(
+                        f"✓ Reflection generated and persisted for episode {episode_id}:\n"
+                        f"  Model: {reflection.llm_model}\n"
+                        f"  Consensus: {reflection.consensus.consensus_method if reflection.consensus else 'N/A'}\n"
+                        f"  Confidence: {reflection.confidence_score:.2f}\n"
+                        f"  Cost: ${reflection.cost_usd:.4f}\n"
+                        f"  Total time: {generation_time:.1f}s\n"
+                        f"  Root cause: {reflection.root_cause[:100]}..."
+                    )
+
+                    # Track success metrics
+                    self._track_reflection_success(reflection, generation_time)
+
+                else:
+                    logger.error(
+                        f"✗ Reflection generation succeeded but persistence failed "
+                        f"for episode {episode_id}"
+                    )
+                    # Track failure metrics
+                    self._track_reflection_failure("persistence_failed")
+
             else:
-                logger.warning(f"Reflection generation failed for episode {episode_id}")
+                logger.warning(
+                    f"Reflection generation returned None for episode {episode_id} "
+                    f"- likely all LLM calls failed"
+                )
+                self._track_reflection_failure("generation_failed")
 
         except Exception as e:
             logger.error(
-                f"Async reflection generation failed for episode {episode_id}: {e}",
+                f"Async reflection pipeline failed for episode {episode_id}: {e}",
                 exc_info=True,
             )
+            self._track_reflection_failure("exception")
+
+    def _track_reflection_success(
+        self, reflection: "Reflection", generation_time: float
+    ) -> None:
+        """Track successful reflection generation metrics."""
+        from src.observability.metrics import (
+            track_reflection_generation,
+            track_reflection_persistence,
+        )
+
+        # Track generation metrics
+        consensus_method = (
+            reflection.consensus.consensus_method
+            if reflection.consensus
+            else "fallback_heuristic"
+        )
+
+        num_models = (
+            len(reflection.consensus.perspectives)
+            if reflection.consensus
+            else 0
+        )
+
+        track_reflection_generation(
+            consensus_method=consensus_method,
+            num_models=num_models,
+            duration_seconds=generation_time,
+            cost_usd=reflection.cost_usd,
+            confidence=reflection.confidence_score,
+            success=True,
+        )
+
+        # Track persistence (assumed successful if we reach here)
+        track_reflection_persistence(success=True)
+
+    def _track_reflection_failure(self, reason: str) -> None:
+        """Track reflection failures for monitoring."""
+        from src.observability.metrics import (
+            track_reflection_failure,
+            track_reflection_persistence,
+        )
+
+        track_reflection_failure(reason=reason)
+
+        # If failure was during persistence, track that separately
+        if reason == "persistence_failed":
+            track_reflection_persistence(success=False)
 
     async def bulk_capture(
         self, episodes: list[EpisodeCreate], generate_reflections: bool = False

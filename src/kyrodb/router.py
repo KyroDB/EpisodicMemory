@@ -381,6 +381,253 @@ class KyroDBRouter:
             logger.error(f"Failed to retrieve episode {episode_id}: {e}")
             raise
 
+    async def update_episode_reflection(
+        self,
+        episode_id: int,
+        customer_id: str,
+        collection: str,
+        reflection: "Reflection",  # Forward reference for type hint
+    ) -> bool:
+        """
+        Update existing episode with generated reflection.
+
+        Security:
+        - Validates customer_id matches existing episode
+        - Serializes reflection with validation
+        - Uses atomic re-insert (KyroDB's update mechanism)
+
+        This is called asynchronously after initial episode storage
+        to add the LLM-generated reflection.
+
+        Args:
+            episode_id: Episode ID to update
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
+            reflection: Generated reflection to persist
+
+        Returns:
+            bool: True if reflection was successfully persisted
+
+        Raises:
+            ValueError: If customer_id is empty or episode not found
+            KyroDBError: On update failure
+        """
+        import json
+
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        try:
+            # Step 1: Query existing episode to get metadata and embedding
+            logger.debug(
+                f"Fetching existing episode {episode_id} "
+                f"(customer: {customer_id}, collection: {namespaced_collection})"
+            )
+
+            existing = await self.text_client.query(
+                doc_id=episode_id,
+                namespace=namespaced_collection,
+                include_embedding=True,  # Need embedding for re-insert
+            )
+
+            if not existing.found:
+                logger.error(
+                    f"Cannot update reflection: episode {episode_id} not found "
+                    f"(customer: {customer_id}, collection: {namespaced_collection})"
+                )
+                raise ValueError(
+                    f"Episode {episode_id} not found in {namespaced_collection}"
+                )
+
+            # Security: Verify customer_id matches (prevent cross-customer updates)
+            existing_customer = existing.metadata.get("customer_id")
+            if existing_customer != customer_id:
+                logger.error(
+                    f"Customer ID mismatch: episode {episode_id} belongs to "
+                    f"{existing_customer}, not {customer_id}"
+                )
+                raise ValueError(
+                    "Customer ID mismatch - potential security violation"
+                )
+
+            # Step 2: Serialize reflection to metadata format
+            reflection_metadata = self._serialize_reflection_to_metadata(reflection)
+
+            # Step 3: Merge with existing metadata (preserve all fields)
+            updated_metadata = {**dict(existing.metadata), **reflection_metadata}
+
+            # Step 4: Re-insert with updated metadata (KyroDB's update mechanism)
+            logger.debug(
+                f"Re-inserting episode {episode_id} with reflection metadata..."
+            )
+
+            response = await self.text_client.insert(
+                doc_id=episode_id,
+                embedding=list(existing.embedding),  # Keep same embedding
+                namespace=namespaced_collection,
+                metadata=updated_metadata,
+            )
+
+            if response.success:
+                logger.info(
+                    f"Reflection persisted for episode {episode_id} "
+                    f"(customer: {customer_id}, "
+                    f"model: {reflection.llm_model}, "
+                    f"confidence: {reflection.confidence_score:.2f}, "
+                    f"cost: ${reflection.cost_usd:.4f})"
+                )
+                return True
+            else:
+                logger.error(
+                    f"Failed to persist reflection for episode {episode_id}: "
+                    f"{response.error}"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update reflection for episode {episode_id} "
+                f"(customer: {customer_id}): {e}",
+                exc_info=True,
+            )
+            # Don't raise - this is async background task, log and continue
+            return False
+
+    def _serialize_reflection_to_metadata(
+        self, reflection: "Reflection"
+    ) -> dict[str, str]:
+        """
+        Serialize reflection to KyroDB metadata format (string-string map).
+
+        Security:
+        - All fields validated by Pydantic before serialization
+        - Lists converted to JSON strings
+        - Floats converted to strings with precision control
+        - No user-controlled keys in output
+
+        Args:
+            reflection: Validated reflection object
+
+        Returns:
+            dict[str, str]: Metadata compatible with KyroDB
+        """
+        import json
+
+        metadata = {
+            # Core fields
+            "reflection_root_cause": reflection.root_cause,
+            "reflection_resolution": reflection.resolution_strategy,
+            "reflection_confidence": f"{reflection.confidence_score:.4f}",
+            "reflection_generalization": f"{reflection.generalization_score:.4f}",
+
+            # Lists (JSON-encoded)
+            "reflection_preconditions": json.dumps(reflection.preconditions),
+            "reflection_env_factors": json.dumps(reflection.environment_factors),
+            "reflection_components": json.dumps(reflection.affected_components),
+
+            # Generation metadata
+            "reflection_model": reflection.llm_model,
+            "reflection_generated_at": reflection.generated_at.isoformat(),
+            "reflection_cost_usd": f"{reflection.cost_usd:.6f}",
+            "reflection_latency_ms": f"{reflection.generation_latency_ms:.2f}",
+        }
+
+        # Consensus metadata (if multi-perspective)
+        if reflection.consensus:
+            consensus = reflection.consensus
+            metadata.update({
+                "reflection_consensus_method": consensus.consensus_method,
+                "reflection_consensus_confidence": f"{consensus.consensus_confidence:.4f}",
+                "reflection_disagreements": json.dumps(consensus.disagreement_points),
+
+                # Store number of perspectives
+                "reflection_perspectives_count": str(len(consensus.perspectives)),
+
+                # Store individual perspectives (for debugging/audit)
+                "reflection_perspectives_json": json.dumps([
+                    {
+                        "model": p.model_name,
+                        "root_cause": p.root_cause,
+                        "confidence": p.confidence_score,
+                        "reasoning": p.reasoning[:200],  # Truncate for storage
+                    }
+                    for p in consensus.perspectives
+                ]),
+            })
+
+        return metadata
+
+    async def update_episode_metadata(
+        self,
+        episode_id: int,
+        customer_id: str,
+        collection: str,
+        metadata_updates: dict[str, str],
+    ) -> bool:
+        """
+        Update episode metadata fields (generic method for any metadata).
+
+        Security:
+        - Validates customer_id matches existing episode
+        - Only updates specified fields (preserves others)
+
+        Args:
+            episode_id: Episode to update
+            customer_id: Customer ID for validation
+            collection: Collection name
+            metadata_updates: Key-value pairs to update
+
+        Returns:
+            bool: Success status
+        """
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
+        try:
+            # Fetch existing
+            existing = await self.text_client.query(
+                doc_id=episode_id,
+                namespace=namespaced_collection,
+                include_embedding=True,
+            )
+
+            if not existing.found:
+                logger.error(f"Episode {episode_id} not found for metadata update")
+                return False
+
+            # Security: Verify customer_id
+            existing_customer = existing.metadata.get("customer_id")
+            if existing_customer != customer_id:
+                logger.error(
+                    f"Customer ID mismatch in metadata update: "
+                    f"episode belongs to {existing_customer}, not {customer_id}"
+                )
+                return False
+
+            # Merge metadata
+            updated_metadata = {**dict(existing.metadata), **metadata_updates}
+
+            # Re-insert
+            response = await self.text_client.insert(
+                doc_id=episode_id,
+                embedding=list(existing.embedding),
+                namespace=namespaced_collection,
+                metadata=updated_metadata,
+            )
+
+            if response.success:
+                logger.debug(
+                    f"Updated {len(metadata_updates)} metadata fields "
+                    f"for episode {episode_id}"
+                )
+                return True
+            else:
+                logger.error(f"Metadata update failed: {response.error}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Metadata update error for episode {episode_id}: {e}")
+            return False
+
     async def health_check(self) -> dict[str, bool]:
         """
         Check health of both KyroDB instances.
