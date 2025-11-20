@@ -93,7 +93,7 @@ def _on_circuit_half_open(breaker: CircuitBreaker) -> None:
 # Opens after 5 consecutive failures, stays open for 60 seconds
 kyrodb_breaker = CircuitBreaker(
     fail_max=5,
-    timeout_duration=60,
+    reset_timeout=60,
     name="KyroDB",
     listeners=[_on_circuit_open, _on_circuit_close, _on_circuit_half_open],
 )
@@ -103,7 +103,7 @@ kyrodb_breaker = CircuitBreaker(
 # Opens after 3 consecutive failures, stays open for 30 seconds (faster recovery for billing)
 stripe_breaker = CircuitBreaker(
     fail_max=3,
-    timeout_duration=30,
+    reset_timeout=30,
     name="Stripe",
     listeners=[_on_circuit_open, _on_circuit_close, _on_circuit_half_open],
 )

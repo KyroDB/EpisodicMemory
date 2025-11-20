@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -28,10 +28,12 @@ from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
 from src.ingestion.multi_perspective_reflection import MultiPerspectiveReflectionService
+from src.gating.service import GatingService
 from src.kyrodb.client import KyroDBError
 from src.kyrodb.router import KyroDBRouter
 from src.models.customer import Customer
 from src.models.episode import EpisodeCreate
+from src.models.gating import ReflectRequest, ReflectResponse
 from src.models.search import SearchRequest, SearchResponse
 from src.observability.health import (
     HealthCheckResponse,
@@ -95,6 +97,7 @@ embedding_service: Optional[EmbeddingService] = None
 reflection_service: Optional[MultiPerspectiveReflectionService] = None
 ingestion_pipeline: Optional[IngestionPipeline] = None
 search_pipeline: Optional[SearchPipeline] = None
+gating_service: Optional[GatingService] = None
 
 
 @asynccontextmanager
@@ -109,7 +112,7 @@ async def lifespan(app: FastAPI):
     - Set up ingestion and search pipelines
     """
     global kyrodb_router, embedding_service, reflection_service
-    global ingestion_pipeline, search_pipeline
+    global ingestion_pipeline, search_pipeline, gating_service
 
     settings = get_settings()
 
@@ -163,6 +166,14 @@ async def lifespan(app: FastAPI):
             embedding_service=embedding_service,
         )
         logger.info("✓ Search pipeline ready")
+
+        # Initialize gating service (Phase 3)
+        logger.info("Initializing gating service...")
+        gating_service = GatingService(
+            search_pipeline=search_pipeline,
+            kyrodb_router=kyrodb_router,
+        )
+        logger.info("✓ Gating service ready")
 
         logger.info("=== Service Ready ===")
 
@@ -734,7 +745,7 @@ async def validate_fix(
         - Stats validated for consistency
     """
     from src.skills.promotion import SkillPromotionService
-    from src.utils.kyrodb_namespace import get_namespaced_collection
+    from src.kyrodb.router import get_namespaced_collection
 
     logger.info(
         f"Fix validation request for episode {validation.episode_id} "
@@ -1013,6 +1024,67 @@ async def search_episodes(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}",
+        )
+
+
+# Pre-action gating endpoint (Phase 3)
+@app.post(
+    "/api/v1/reflect",
+    response_model=ReflectResponse,
+    tags=["Reflection"],
+)
+@limiter.limit("100/minute")
+async def reflect_before_action(
+    request: Request,
+    reflect_request: ReflectRequest,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+    db: CustomerDatabase = Depends(get_customer_db),
+):
+    """
+    Reflect before executing action.
+
+    This is the core pre-action gating system. Agents call this
+    BEFORE executing potentially risky actions.
+
+    Returns:
+        - BLOCK: High confidence this will fail (similarity > 0.9, preconditions match)
+        - REWRITE: Likely to fail, suggest alternative
+        - HINT: Might fail, show hints
+        - PROCEED: No known issues
+
+    Usage billing:
+        - Base cost: 0.2 credits (2x search cost, since this prevents failures)
+    """
+    if not gating_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gating service not initialized",
+        )
+
+    try:
+        response = await gating_service.reflect_before_action(reflect_request, customer_id)
+
+        # Track usage (async, non-blocking)
+        credits_used = 0.2
+        try:
+            await db.increment_usage(customer_id, 1)  # Round to 1 credit
+            logger.debug(
+                f"Usage tracked: customer={customer_id}, reflect, "
+                f"credits={credits_used}, recommendation={response.recommendation}"
+            )
+        except Exception as e:
+            logger.error(f"Usage tracking failed: {e}", exc_info=True)
+
+        # TODO: Track business metrics for reflection
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Reflection failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Reflection failed: {str(e)}",
         )
 
 
