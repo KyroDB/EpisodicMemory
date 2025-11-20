@@ -302,6 +302,42 @@ class SearchConfig(BaseSettings):
     # Client-side filtering limits (fetch more, filter down)
     fetch_multiplier: int = Field(default=5, ge=1, le=10)
 
+    # LLM semantic validation
+    enable_llm_validation: bool = Field(
+        default=False,
+        description="Enable LLM semantic validation for preconditions (disabled by default for safety)"
+    )
+    llm_similarity_threshold: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold to trigger LLM validation (only validate high-similarity matches)"
+    )
+    llm_confidence_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum LLM confidence score to accept a match"
+    )
+    llm_timeout_seconds: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Timeout for LLM validation calls in seconds"
+    )
+    llm_cache_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=3600,
+        description="Time-to-live for LLM validation cache entries (5 minutes default)"
+    )
+    max_llm_cost_per_day_usd: float = Field(
+        default=10.0,
+        ge=0.1,
+        le=1000.0,
+        description="Maximum daily cost for LLM validation (circuit breaker)"
+    )
+
     @field_validator("max_k")
     @classmethod
     def validate_max_k(cls, v: int, info) -> int:

@@ -15,13 +15,15 @@ Designed for <50ms P99 latency.
 import logging
 import time
 from datetime import timezone, datetime
+from threading import Lock
 
 from src.ingestion.embedding import EmbeddingService
 from src.kyrodb.router import KyroDBRouter
 from src.models.episode import Episode
 from src.models.search import SearchRequest, SearchResponse, SearchResult
-from src.retrieval.preconditions import PreconditionMatcher
+from src.retrieval.preconditions import PreconditionMatcher, AdvancedPreconditionMatcher, get_advanced_precondition_matcher
 from src.retrieval.ranking import EpisodeRanker
+from src.config import get_settings
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ class SearchPipeline:
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
         precondition_matcher: Optional[PreconditionMatcher] = None,
+        advanced_precondition_matcher: Optional[AdvancedPreconditionMatcher] = None,
         ranker: Optional[EpisodeRanker] = None,
     ):
         """
@@ -57,16 +60,36 @@ class SearchPipeline:
         Args:
             kyrodb_router: KyroDB router for dual-instance search
             embedding_service: Multi-modal embedding service
-            precondition_matcher: Optional precondition matcher (creates default if None)
+            precondition_matcher: Optional basic precondition matcher (creates default if None)
+            advanced_precondition_matcher: Optional LLM-based precondition matcher
             ranker: Optional ranker (creates default if None)
         """
         self.kyrodb_router = kyrodb_router
         self.embedding_service = embedding_service
         self.precondition_matcher = precondition_matcher or PreconditionMatcher()
+        self.advanced_precondition_matcher = advanced_precondition_matcher
         self.ranker = ranker or EpisodeRanker()
 
+        # Initialize from config if advanced matcher not provided
+        settings = get_settings()
+        if settings.search.enable_llm_validation and self.advanced_precondition_matcher is None:
+            try:
+                self.advanced_precondition_matcher = get_advanced_precondition_matcher(
+                    google_api_key=settings.llm.google_api_key,
+                    enable_llm=True
+                )
+                logger.info("LLM-based semantic validation enabled for search pipeline")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LLM validation: {e}. Falling back to basic matcher.")
+                self.advanced_precondition_matcher = None
+
+        # Thread-safe metrics tracking
+        self._metrics_lock = Lock()
         self.total_searches = 0
         self.total_latency_ms = 0.0
+        self.llm_validation_calls = 0
+        self.llm_rejections = 0
+        self.llm_latency_ms = 0.0
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         """
@@ -260,11 +283,11 @@ class SearchPipeline:
 
         # Filter by timestamp range
         if request.min_timestamp is not None:
-            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=UTC)
+            min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
 
         if request.max_timestamp is not None:
-            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=UTC)
+            max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
         # Filter by tags (all required tags must be present)
@@ -284,7 +307,11 @@ class SearchPipeline:
         request: SearchRequest,
     ) -> list[tuple[Episode, float, float, list[str]]]:
         """
-        Check preconditions for all candidates.
+        Check preconditions for all candidates with optional LLM semantic validation.
+        
+        Two-stage approach:
+        1. Basic heuristic matching (fast)
+        2. LLM semantic validation for high-similarity candidates (if enabled)
 
         Args:
             candidates: List of (episode, similarity_score) pairs
@@ -295,17 +322,59 @@ class SearchPipeline:
                 List of candidates with precondition scores
         """
         results = []
+        settings = get_settings()
+        llm_similarity_threshold = settings.search.llm_similarity_threshold
 
         for episode, similarity_score in candidates:
-            # Check preconditions against current state
+            # Stage 1: Basic heuristic precondition matching
             precond_result = self.precondition_matcher.check_preconditions(
                 episode=episode,
                 current_state=request.current_state,
                 threshold=request.precondition_threshold,
             )
 
-            # Only include episodes that meet precondition threshold
+            # Only include episodes that meet basic precondition threshold
             if precond_result.matched:
+                # Stage 2: LLM semantic validation (if enabled and high similarity)
+                should_validate_with_llm = (
+                    self.advanced_precondition_matcher is not None
+                    and similarity_score >= llm_similarity_threshold
+                )
+                
+                if should_validate_with_llm:
+                    try:
+                        llm_start = time.perf_counter()
+                        llm_result = await self.advanced_precondition_matcher.check_preconditions_with_llm(
+                            candidate_episode=episode,
+                            current_query=request.goal,
+                            current_state=request.current_state,
+                            similarity_score=similarity_score,
+                            threshold=request.precondition_threshold,
+                        )
+                        llm_latency = (time.perf_counter() - llm_start) * 1000
+                        
+                        # Track LLM metrics (thread-safe)
+                        with self._metrics_lock:
+                            self.llm_validation_calls += 1
+                            self.llm_latency_ms += llm_latency
+                        
+                        if not llm_result.matched:
+                            with self._metrics_lock:
+                                self.llm_rejections += 1
+                            logger.debug(
+                                f"Episode {episode.episode_id} rejected by LLM validation "
+                                f"(similarity={similarity_score:.3f}): {llm_result.explanation}"
+                            )
+                            continue  # Skip this candidate
+                        
+                    except Exception as e:
+                        logger.warning(
+                            f"LLM validation failed for episode {episode.episode_id}: {e}. "
+                            f"Falling back to basic match."
+                        )
+                        # Gracefully degrade to basic match
+                
+                # Accept candidate (passed both stages or LLM not enabled)
                 results.append(
                     (
                         episode,
@@ -316,7 +385,7 @@ class SearchPipeline:
                 )
             else:
                 logger.debug(
-                    f"Episode {episode.episode_id} filtered by preconditions: "
+                    f"Episode {episode.episode_id} filtered by basic preconditions: "
                     f"{precond_result.explanation}"
                 )
 
@@ -360,16 +429,42 @@ class SearchPipeline:
 
     def get_stats(self) -> dict[str, float]:
         """
-        Get search statistics.
+        Get search statistics including LLM validation metrics.
 
         Returns:
-            dict: Stats (total_searches, avg_latency_ms)
+            dict: Stats including total searches, latency, and LLM validation metrics
         """
         avg_latency = (
             self.total_latency_ms / self.total_searches if self.total_searches > 0 else 0.0
         )
+        
+        # Thread-safe metrics read
+        with self._metrics_lock:
+            llm_calls = self.llm_validation_calls
+            llm_latency = self.llm_latency_ms
+            llm_rejects = self.llm_rejections
+        
+        avg_llm_latency = (
+            llm_latency / llm_calls if llm_calls > 0 else 0.0
+        )
+        llm_rejection_rate = (
+            llm_rejects / llm_calls if llm_calls > 0 else 0.0
+        )
 
-        return {
+        stats = {
             "total_searches": self.total_searches,
             "avg_latency_ms": avg_latency,
+            "llm_validation_calls": llm_calls,
+            "llm_rejections": llm_rejects,
+            "llm_rejection_rate": llm_rejection_rate,
+            "avg_llm_latency_ms": avg_llm_latency,
         }
+        
+        # Add advanced matcher stats if available
+        if self.advanced_precondition_matcher:
+            advanced_stats = self.advanced_precondition_matcher.get_stats()
+            stats["llm_cache_hits"] = advanced_stats.get("cache_hits", 0)
+            stats["llm_cache_hit_rate"] = advanced_stats.get("cache_hit_rate", 0.0)
+            stats["llm_total_cost_usd"] = advanced_stats.get("total_cost_usd", 0.0)
+        
+        return stats

@@ -300,7 +300,9 @@ class AdvancedPreconditionMatcher:
     # Configuration
     SIMILARITY_THRESHOLD_FOR_LLM = 0.85  # Only validate if similarity >= this
     LLM_CONFIDENCE_THRESHOLD = 0.7  # Require LLM confidence >= 0.7 to accept
-    VALIDATION_TIMEOUT_MS = 2000  # Hard timeout per validation (2 seconds)
+    # Security: Timeout for LLM validation (prevent hanging)
+    # Note: This is overridden by config.search.llm_timeout_seconds if available
+    VALIDATION_TIMEOUT_MS = 2000  # 2 seconds default
     CACHE_SIZE = 500  # LRU cache size
     MAX_QUERY_LENGTH = 500  # Security: prevent abuse
     
