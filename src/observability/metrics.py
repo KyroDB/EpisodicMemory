@@ -23,8 +23,9 @@ Integration:
 - Retention: 90 days (Prometheus config)
 """
 
-from prometheus_client import (
 from typing import Optional
+
+from prometheus_client import (
     CONTENT_TYPE_LATEST,
     REGISTRY,
     Counter,

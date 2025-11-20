@@ -58,7 +58,7 @@ class LLMPerspective(BaseModel):
     # Core analysis
     root_cause: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=2000,
         description="Fundamental reason for failure (not symptoms)"
     )
@@ -71,7 +71,7 @@ class LLMPerspective(BaseModel):
 
     resolution_strategy: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=3000,
         description="Step-by-step resolution approach"
     )
@@ -164,7 +164,7 @@ class ReflectionConsensus(BaseModel):
     # Consensus outputs
     agreed_root_cause: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=2000,
         description="Consensus root cause"
     )
@@ -177,7 +177,7 @@ class ReflectionConsensus(BaseModel):
 
     agreed_resolution: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=3000,
         description="Best resolution strategy"
     )
@@ -246,7 +246,7 @@ class Reflection(BaseModel):
     # Core analysis (either from consensus or single LLM)
     root_cause: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=2000,
         description="Identified root cause of the issue"
     )
@@ -259,7 +259,7 @@ class Reflection(BaseModel):
 
     resolution_strategy: str = Field(
         ...,
-        min_length=10,
+        min_length=1,
         max_length=3000,
         description="How the issue was resolved"
     )

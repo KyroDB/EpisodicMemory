@@ -155,6 +155,23 @@ def mock_gemini_perspective():
     )
 
 
+@pytest.fixture
+def mock_llm_dependencies():
+    """Mock external LLM dependencies to simulate installed packages."""
+    import sys
+    # Ensure module is loaded
+    import src.ingestion.multi_perspective_reflection
+    mpr = sys.modules["src.ingestion.multi_perspective_reflection"]
+    
+    with patch.object(mpr, "ANTHROPIC_AVAILABLE", True), \
+         patch.object(mpr, "OPENAI_AVAILABLE", True), \
+         patch.object(mpr, "GEMINI_AVAILABLE", True), \
+         patch.object(mpr, "AsyncAnthropic", MagicMock()), \
+         patch.object(mpr, "AsyncOpenAI", MagicMock()), \
+         patch.object(mpr, "genai", MagicMock()):
+        yield
+
+
 # ============================================================================
 # Security Tests: Prompt Injection Defense
 # ============================================================================
@@ -473,6 +490,11 @@ class TestConsensusReconciliation:
 class TestMultiPerspectiveReflection:
     """Test multi-perspective reflection generation with mocked LLM calls."""
 
+    @pytest.fixture(autouse=True)
+    def setup_dependencies(self, mock_llm_dependencies):
+        """Automatically use mock_llm_dependencies for all tests in this class."""
+        pass
+
     @pytest.mark.asyncio
     async def test_generate_with_all_models_succeed(
         self, llm_config, sample_episode, mock_gpt4_perspective,
@@ -649,7 +671,7 @@ class TestMultiPerspectiveReflection:
 
 @pytest.mark.asyncio
 async def test_end_to_end_reflection_generation(
-    llm_config, sample_episode, mock_gpt4_perspective, mock_claude_perspective
+    llm_config, sample_episode, mock_gpt4_perspective, mock_claude_perspective, mock_llm_dependencies
 ):
     """
     End-to-end test: Episode → Sanitize → LLM calls → Consensus → Reflection.

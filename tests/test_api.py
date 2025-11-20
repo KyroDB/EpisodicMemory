@@ -26,18 +26,19 @@ class TestHealthEndpoint:
         data = response.json()
 
         assert "status" in data
-        assert "kyrodb_connected" in data
-        assert "embedding_service_ready" in data
-        assert "reflection_service_ready" in data
+        assert "components" in data
+        assert isinstance(data["components"], list)
+        assert len(data["components"]) > 0
 
     def test_health_check_structure(self, app_client: TestClient):
         """Test health check response structure."""
         response = app_client.get("/health")
         data = response.json()
 
-        assert isinstance(data["kyrodb_connected"], bool)
-        assert isinstance(data["embedding_service_ready"], bool)
-        assert isinstance(data["reflection_service_ready"], bool)
+        assert "status" in data
+        assert "components" in data
+        assert "timestamp" in data
+        assert isinstance(data["components"], list)
 
 
 class TestStatsEndpoint:

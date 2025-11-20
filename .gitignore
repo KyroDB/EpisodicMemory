@@ -46,11 +46,17 @@ poetry.lock
 *.log
 logs/
 
-# Data and storage
-data/screenshots/
-data/archive/
+# Data and storage (comprehensive)
+data/
 *.db
 *.sqlite
+*.sqlite3
+*.csv
+*.json
+*.parquet
+*.feather
+*.pkl
+*.pickle
 
 # Model cache (large files - sentence-transformers, CLIP)
 .cache/
@@ -70,10 +76,10 @@ htmlcov/
 
 # Distribution
 *.tar.gz
-*.whl  
+*.whl
+
+# Project documentation
 EPISODIC_MEMORY_IMPLEMENTATION.md
-
-
 PROGRESS.md
 .env.example
 .github/copilot-instructions.md

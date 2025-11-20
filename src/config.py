@@ -217,9 +217,7 @@ class LLMConfig(BaseSettings):
         # Check for placeholder values
         placeholder_patterns = [
             "your-api-key-here",
-            "sk-...",
             "example",
-            "test",
             "dummy"
         ]
 

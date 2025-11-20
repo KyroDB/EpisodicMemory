@@ -21,9 +21,21 @@ import logging
 import time
 from collections import Counter
 from datetime import timezone, datetime
+from typing import Optional
 
-from anthropic import APIConnectionError, APIError, AsyncAnthropic, RateLimitError
-from openai import AsyncOpenAI
+try:
+    from anthropic import APIConnectionError, APIError, AsyncAnthropic, RateLimitError
+    ANTHROPIC_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    ANTHROPIC_AVAILABLE = False
+    APIConnectionError = APIError = AsyncAnthropic = RateLimitError = None
+
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    OPENAI_AVAILABLE = False
+    AsyncOpenAI = None
 from pydantic import ValidationError
 
 try:
@@ -35,7 +47,6 @@ except ImportError:
 
 from src.config import LLMConfig
 from src.models.episode import (
-from typing import Union, Optional
     EpisodeCreate,
     LLMPerspective,
     Reflection,
@@ -114,8 +125,9 @@ class PromptInjectionDefense:
                 logger.warning(
                     f"Potential prompt injection detected in {field_name}: '{pattern}'"
                 )
-                # Replace with safe placeholder
-                text = text.replace(pattern, "[REDACTED]")
+                # Replace with safe placeholder (case-insensitive)
+                import re
+                text = re.sub(re.escape(pattern), "[REDACTED]", text, flags=re.IGNORECASE)
                 text_lower = text.lower()
 
         # Normalize excessive whitespace
@@ -195,8 +207,8 @@ Return ONLY valid JSON, no markdown."""
         """
         self.config = config
 
-        # Initialize OpenAI client
-        if config.openai_api_key or config.api_key:
+        # Initialize OpenAI client (optional dependency)
+        if config.openai_api_key and OPENAI_AVAILABLE:
             api_key = config.openai_api_key or config.api_key
             self.openai_client = AsyncOpenAI(
                 api_key=api_key,
@@ -206,10 +218,13 @@ Return ONLY valid JSON, no markdown."""
             logger.info("OpenAI client initialized")
         else:
             self.openai_client = None
-            logger.warning("OpenAI client not initialized (no API key)")
+            if not OPENAI_AVAILABLE:
+                logger.warning("OpenAI SDK not installed; OpenAI disabled")
+            else:
+                logger.warning("OpenAI client not initialized (no API key)")
 
-        # Initialize Anthropic client
-        if config.anthropic_api_key:
+        # Initialize Anthropic client (optional dependency)
+        if config.anthropic_api_key and ANTHROPIC_AVAILABLE:
             self.anthropic_client = AsyncAnthropic(
                 api_key=config.anthropic_api_key,
                 timeout=config.timeout_seconds,
@@ -218,7 +233,10 @@ Return ONLY valid JSON, no markdown."""
             logger.info("Anthropic client initialized")
         else:
             self.anthropic_client = None
-            logger.warning("Anthropic client not initialized (no API key)")
+            if not ANTHROPIC_AVAILABLE:
+                logger.warning("Anthropic SDK not installed; Anthropic disabled")
+            else:
+                logger.warning("Anthropic client not initialized (no API key)")
 
         # Initialize Gemini client
         if config.google_api_key and GEMINI_AVAILABLE:

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from src.config import (
@@ -54,7 +55,7 @@ def test_settings() -> Settings:
         ),
         llm=LLMConfig(
             api_key="sk-test-key-12345",
-            model_name="gpt-4",
+            openai_model_name="gpt-4",
             temperature=0.7,
             max_tokens=1000,
         ),
@@ -263,12 +264,33 @@ def app_client(
     # Patch global instances
     import src.main as main_module
     from src.main import app
+    from src.auth.dependencies import get_authenticated_customer
+    from src.models.customer import Customer, SubscriptionTier, CustomerStatus
 
     main_module.kyrodb_router = mock_kyrodb_router
     main_module.embedding_service = mock_embedding_service
     main_module.reflection_service = None  # Skip LLM for tests
 
+    # Override authentication dependency
+    async def mock_get_authenticated_customer(request: Request):
+        customer = Customer(
+            customer_id="test-customer",
+            organization_name="Test Org",
+            email="test@example.com",
+            subscription_tier=SubscriptionTier.ENTERPRISE,
+            status=CustomerStatus.ACTIVE,
+            monthly_credit_limit=100000,
+        )
+        # Attach customer to request state (required for get_customer_id_from_request)
+        request.state.customer = customer
+        return customer
+
+    app.dependency_overrides[get_authenticated_customer] = mock_get_authenticated_customer
+
     # Create test client (skip lifespan to avoid actual connections)
     client = TestClient(app)
 
     yield client
+
+    # Clean up overrides
+    app.dependency_overrides.clear()

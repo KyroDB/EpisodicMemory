@@ -18,12 +18,12 @@ import logging
 import secrets
 from datetime import timezone, datetime, timedelta
 from pathlib import Path
+from typing import Union, Optional
 
 import aiosqlite
 import bcrypt
 
 from src.models.customer import (
-from typing import Union, Optional
     APIKey,
     APIKeyCreate,
     Customer,
