@@ -379,7 +379,7 @@ class KyroDBClient:
             namespace: Filter by namespace
             min_score: Minimum cosine similarity threshold
             include_embeddings: Return embeddings in results
-            metadata_filters: Metadata filters (not fully implemented in KyroDB)
+            metadata_filters: Server-side metadata filtering (exact match on key-value pairs)
 
         Returns:
             SearchResponse with top-k results
@@ -436,6 +436,69 @@ class KyroDBClient:
         """
         request = DeleteRequest(doc_id=doc_id, namespace=namespace)
         return await self._call_with_retry(self._stub.Delete, request, "Delete")
+
+    @with_kyrodb_circuit_breaker
+    async def bulk_query(
+        self,
+        doc_ids: list[int],
+        namespace: str = "",
+        include_embeddings: bool = False,
+    ) -> "BulkQueryResponse":
+        """
+        Batch retrieve multiple documents by ID.
+        
+        Significantly more efficient than individual query calls for bulk operations.
+        
+        Args:
+            doc_ids: List of document IDs to retrieve
+            namespace: Optional namespace filter
+            include_embeddings: Return embeddings in results
+            
+        Returns:
+            BulkQueryResponse with results for each requested ID
+            
+        Raises:
+            KyroDBError: On bulk query failure
+        """
+        from src.kyrodb.kyrodb_pb2 import BulkQueryRequest
+        
+        request = BulkQueryRequest(
+            doc_ids=doc_ids,
+            include_embeddings=include_embeddings,
+            namespace=namespace,
+        )
+        return await self._call_with_retry(self._stub.BulkQuery, request, "BulkQuery")
+
+    @with_kyrodb_circuit_breaker
+    async def batch_delete(
+        self,
+        doc_ids: list[int],
+        namespace: str = "",
+    ) -> "BatchDeleteResponse":
+        """
+        Batch delete multiple documents by ID.
+        
+        Atomic operation that deletes all IDs or fails entirely.
+        Much more efficient than individual deletes.
+        
+        Args:
+            doc_ids: List of document IDs to delete
+            namespace: Optional namespace filter
+            
+        Returns:
+            BatchDeleteResponse with deletion count
+            
+        Raises:
+            KyroDBError: On batch delete failure
+        """
+        from src.kyrodb.kyrodb_pb2 import BatchDeleteRequest, IdList
+        
+        id_list = IdList(doc_ids=doc_ids)
+        request = BatchDeleteRequest(
+            ids=id_list,
+            namespace=namespace,
+        )
+        return await self._call_with_retry(self._stub.BatchDelete, request, "BatchDelete")
 
     @with_kyrodb_circuit_breaker
     async def health_check(self) -> HealthResponse:

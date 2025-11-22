@@ -43,8 +43,7 @@ class SearchPipeline:
     Total target: <50ms P99
     """
 
-    # Candidate expansion factor for metadata filtering
-    CANDIDATE_EXPANSION_FACTOR = 5
+
 
     def __init__(
         self,
@@ -114,31 +113,36 @@ class SearchPipeline:
             query_embedding = self.embedding_service.embed_text(request.goal)
             latency_breakdown["embedding_ms"] = (time.perf_counter() - stage_start) * 1000
 
-            # Stage 2: KyroDB search with expansion (~1-5ms)
+            # Stage 2: KyroDB search with server-side filtering (~1-3ms)
             stage_start = time.perf_counter()
-            fetch_k = request.k * self.CANDIDATE_EXPANSION_FACTOR
+            kyrodb_filters = self._build_kyrodb_filters(request)
+            # Fetch 2x buffer: headroom for incomplete server-side filtering + precondition matching
+            fetch_k = request.k * 2
             candidates = await self._fetch_candidates(
                 query_embedding=query_embedding,
                 customer_id=request.customer_id,
                 collection=request.collection,
                 k=fetch_k,
                 min_similarity=request.min_similarity,
+                metadata_filters=kyrodb_filters,
             )
             latency_breakdown["search_ms"] = (time.perf_counter() - stage_start) * 1000
 
             total_candidates = len(candidates)
             logger.debug(f"Fetched {total_candidates} candidates from KyroDB")
 
-            # Stage 3: Metadata filtering (~1-2ms)
+            # Stage 3: Metadata validation (safety check)
             stage_start = time.perf_counter()
-            filtered_candidates = self._apply_metadata_filters(candidates, request)
-            latency_breakdown["filtering_ms"] = (time.perf_counter() - stage_start) * 1000
+            filtered_candidates = self._validate_metadata_filters(candidates, request)
+            latency_breakdown["validation_ms"] = (time.perf_counter() - stage_start) * 1000
 
             total_filtered = len(filtered_candidates)
-            logger.debug(
-                f"Filtered to {total_filtered} candidates "
-                f"(removed {total_candidates - total_filtered})"
-            )
+            if total_filtered < total_candidates:
+                logger.warning(
+                    f"Server-side filtering incomplete: {total_candidates - total_filtered} "
+                    f"candidates removed by client validation. Check KyroDB metadata filters."
+                )
+            logger.debug(f"Validated {total_filtered} candidates")
 
             # Stage 4: Precondition matching (~5-15ms for 25 candidates)
             stage_start = time.perf_counter()
@@ -178,7 +182,7 @@ class SearchPipeline:
                 f"{total_latency_ms:.2f}ms total "
                 f"(embed: {latency_breakdown['embedding_ms']:.2f}ms, "
                 f"search: {latency_breakdown['search_ms']:.2f}ms, "
-                f"filter: {latency_breakdown['filtering_ms']:.2f}ms, "
+                f"validation: {latency_breakdown['validation_ms']:.2f}ms, "
                 f"precond: {latency_breakdown['precondition_ms']:.2f}ms, "
                 f"rank: {latency_breakdown['ranking_ms']:.2f}ms)"
             )
@@ -189,6 +193,34 @@ class SearchPipeline:
             logger.error(f"Search failed: {e}", exc_info=True)
             raise
 
+    def _build_kyrodb_filters(self, request: SearchRequest) -> dict[str, str]:
+        """
+        Build KyroDB metadata filters from search request.
+        
+        Converts SearchRequest filters to KyroDB-compatible string-string map.
+        
+        Args:
+            request: Search request with filter criteria
+            
+        Returns:
+            dict[str, str]: Metadata filters for KyroDB
+        """
+        filters = {}
+        
+        if request.tool_filter:
+            filters["tool"] = request.tool_filter.lower()
+            
+        if request.min_timestamp is not None:
+            filters["min_timestamp"] = str(request.min_timestamp)
+            
+        if request.max_timestamp is not None:
+            filters["max_timestamp"] = str(request.max_timestamp)
+            
+        if request.tags:
+            filters["tags"] = ",".join(sorted(request.tags))
+            
+        return filters
+
     async def _fetch_candidates(
         self,
         query_embedding: list[float],
@@ -196,11 +228,10 @@ class SearchPipeline:
         collection: str,
         k: int,
         min_similarity: float,
+        metadata_filters: Optional[dict[str, str]] = None,
     ) -> list[tuple[Episode, float]]:
         """
-        Fetch candidate episodes from KyroDB with customer namespace isolation.
-
-        Multi-tenancy: Only searches within customer's namespaced collection.
+        Fetch candidate episodes from KyroDB with server-side filtering.
 
         Args:
             query_embedding: Query embedding vector
@@ -208,12 +239,10 @@ class SearchPipeline:
             collection: Collection name (failures, skills, rules)
             k: Number of candidates to fetch
             min_similarity: Minimum similarity threshold
+            metadata_filters: Server-side metadata filters
 
         Returns:
             list[tuple[Episode, float]]: List of (episode, similarity_score) pairs
-
-        Raises:
-            ValueError: If customer_id is None or empty
         """
         # Security: Verify customer_id is provided (prevent data leakage)
         if not customer_id:
@@ -221,13 +250,14 @@ class SearchPipeline:
                 "customer_id is required for search - multi-tenancy violation detected"
             )
 
-        # Search text instance with customer namespace isolation
+        # Search with server-side metadata filtering
         search_results = await self.kyrodb_router.search_text(
             query_embedding=query_embedding,
             k=k,
             customer_id=customer_id,
             collection=collection,
             min_score=min_similarity,
+            metadata_filters=metadata_filters,
         )
 
         # Parse episode metadata from KyroDB results
@@ -249,29 +279,28 @@ class SearchPipeline:
 
         return candidates
 
-    def _apply_metadata_filters(
+    def _validate_metadata_filters(
         self,
         candidates: list[tuple[Episode, float]],
         request: SearchRequest,
     ) -> list[tuple[Episode, float]]:
         """
-        Apply metadata filters to candidates.
-
-        Filters:
-        - Tool filter (exact match on primary tool)
-        - Timestamp range (min_timestamp, max_timestamp)
-        - Tags (all required tags must be present)
-
+        Validate server-side metadata filtering (safety check).
+        
+        This is a defensive check to ensure KyroDB's metadata filtering worked correctly.
+        Under normal operation, this should not filter out any candidates.
+        
         Args:
-            candidates: List of (episode, score) pairs
+            candidates: List of (episode, score) pairs from KyroDB
             request: Search request with filter criteria
-
+            
         Returns:
-            list[tuple[Episode, float]]: Filtered candidates
+            list[tuple[Episode, float]]: Validated candidates
         """
+        original_count = len(candidates)
         filtered = candidates
 
-        # Filter by tool (primary tool in tool_chain)
+        # Validate tool filter
         if request.tool_filter:
             tool_filter_lower = request.tool_filter.lower()
             filtered = [
@@ -281,7 +310,7 @@ class SearchPipeline:
                 and ep.create_data.tool_chain[0].lower() == tool_filter_lower
             ]
 
-        # Filter by timestamp range
+        # Validate timestamp range
         if request.min_timestamp is not None:
             min_dt = datetime.fromtimestamp(request.min_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at >= min_dt]
@@ -290,7 +319,7 @@ class SearchPipeline:
             max_dt = datetime.fromtimestamp(request.max_timestamp, tz=timezone.utc)
             filtered = [(ep, score) for ep, score in filtered if ep.created_at <= max_dt]
 
-        # Filter by tags (all required tags must be present)
+        # Validate tags
         if request.tags:
             required_tags = {tag.lower() for tag in request.tags}
             filtered = [
@@ -298,6 +327,15 @@ class SearchPipeline:
                 for ep, score in filtered
                 if required_tags.issubset({tag.lower() for tag in ep.create_data.tags})
             ]
+
+        # Log if validation removed candidates (indicates KyroDB filtering incomplete)
+        removed_count = original_count - len(filtered)
+        if removed_count > 0:
+            logger.warning(
+                f"Validation removed {removed_count}/{original_count} candidates. "
+                f"KyroDB metadata filtering may be incomplete. Filters: {request.tool_filter}, "
+                f"timestamps: [{request.min_timestamp}, {request.max_timestamp}], tags: {request.tags}"
+            )
 
         return filtered
 

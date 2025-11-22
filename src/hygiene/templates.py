@@ -88,15 +88,12 @@ class TemplateGenerator:
             f"({len(cluster_info.episode_ids)} episodes)"
         )
         
-        # Fetch episodes in cluster
-        # WORKAROUND: Until bulk_fetch_episodes is fully implemented,
-        # we'll use cluster episode_ids to fetch individually
+        # Fetch episodes in cluster using bulk operation
         episodes = await self._fetch_cluster_episodes(cluster_info)
         
         if not episodes:
             raise ValueError(
                 f"No episodes found for cluster {cluster_info.cluster_id}. "
-                f"This may occur if bulk_fetch_episodes is not yet implemented. "
                 f"Cluster has {len(cluster_info.episode_ids)} episode IDs."
             )
         
@@ -232,9 +229,6 @@ class TemplateGenerator:
     
     async def _fetch_cluster_episodes(self, cluster_info: ClusterInfo) -> list[Episode]:
         """
-        Fetch all episodes in a cluster.
-        
-        WORKAROUND: Uses individual fetches until bulk_fetch_episodes is implemented.
         
         Args:
             cluster_info: Cluster information
@@ -246,26 +240,28 @@ class TemplateGenerator:
             This is a temporary workaround. In production, this should use
             kyrodb_router.bulk_fetch_episodes() for better performance.
         """
-        # TODO: Replace with bulk_fetch_episodes when available
-        # For now, attempt individual fetches (will work if episodes are in memory)
-        
-        logger.info(
-            f"Fetching {len(cluster_info.episode_ids)} episodes for cluster {cluster_info.cluster_id} "
-            f"(using workaround - individual fetches)"
-        )
-        
-        # WORKAROUND: Return empty list for now
-        # In a real implementation, we would:
-        # 1. Use kyrodb_router.bulk_fetch_episodes(cluster_info.customer_id)
-        # 2. Filter by cluster_info.episode_ids
-        # 3. Deserialize to Episode objects
-        
-        logger.warning(
-            f"_fetch_cluster_episodes using placeholder implementation. "
-            f"Cluster {cluster_info.cluster_id} has {len(cluster_info.episode_ids)} episodes "
-            f"but bulk fetch not yet available. Template generation will fail until implemented."
-        )
-        return []
+        # Use bulk fetch for efficiency
+        try:
+            episodes = await self.kyrodb_router.bulk_fetch_episodes(
+                episode_ids=cluster_info.episode_ids,
+                customer_id=cluster_info.customer_id,
+                collection="failures",
+                include_images=False,
+            )
+            
+            logger.info(
+                f"Bulk fetched {len(episodes)}/{len(cluster_info.episode_ids)} episodes "
+                f"for cluster {cluster_info.cluster_id}"
+            )
+            
+            return episodes
+            
+        except Exception as e:
+            logger.error(
+                f"Failed to bulk fetch episodes for cluster {cluster_info.cluster_id}: {e}",
+                exc_info=True,
+            )
+            raise  # Re-raise so caller knows fetch failed vs no episodes found
     
     async def _persist_template(self, cluster_template: ClusterTemplate) -> bool:
         """

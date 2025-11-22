@@ -1,37 +1,103 @@
 # EpisodicMemory
 
-Production-ready episodic memory system for AI coding assistants. Multi-tenant SaaS providing intelligent episode storage and retrieval with enterprise-grade observability and security.
+**Production-grade episodic memory for AI coding assistants**
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-BSL-blue.svg)](LICENSE)
+Store and retrieve multi-modal failure episodes with semantic search, precondition matching, and intelligent ranking.
 
 ---
 
-## Overview
+## What It Does
 
-EpisodicMemory stores multi-modal episodes (text, code, images) and retrieves relevant context using semantic search, precondition matching, and intelligent ranking. Built on [KyroDB](https://github.com/KyroDB/KyroDB) for high-performance vector search.
+Captures failed actions (code errors, deployment failures) and retrieves relevant past solutions when similar situations occur.
 
-**Target Customers**: AI coding tool companies (Cursor, Replit), enterprise AI teams, developer platforms
+**Example**: AI assistant fails to deploy → searches past deployment failures → finds matching error → applies proven solution
 
-**Business Model**: Freemium (100 episodes/month) → Pro ($29/month, 10K episodes) → Enterprise (custom)
+---
+
+## Core Features
+
+- **Multi-modal storage**: Text, code, images, error traces
+- **Semantic search**: Vector similarity + precondition matching (\u003c50ms P99)
+- **Smart ranking**: Recency, similarity, context compatibility
+- **Multi-tenant**: API key authentication, namespace isolation
+- **Production-ready**: Prometheus metrics, structured logging, Kubernetes
 
 ---
 
 ## Quick Start
 
-### Local Development
-
 ```bash
-# Install dependencies
+# Install
 pip install -r requirements.txt
 
 # Configure
 cp .env.example .env
-# Edit .env with KyroDB connection details
+# Set KyroDB connection in .env
 
 # Run
-uvicorn src.main:app --reload --port 8000
+uvicorn src.main:app --port 8000
 ```
+
+**API**: `http://localhost:8000/docs`
+
+---
+
+## Usage
+
+### Capture Failure
+
+```python
+POST /api/v1/capture
+Headers: {"X-API-Key": "your_key"}
+Body: {
+  "episode_type": "failure",
+  "goal": "Deploy to production",
+  "error_trace": "ImagePullBackOff: registry.io/app:v1.2.3",
+  "error_class": "resource_error",
+  "tool_chain": ["kubectl", "apply"]
+}
+```
+
+### Search Similar Episodes
+
+```python
+POST /api/v1/search
+Headers: {"X-API-Key": "your_key"}
+Body: {
+  "goal": "Deploy with kubectl",
+  "current_state": {"cluster": "prod"},
+  "k": 5,
+  "min_similarity": 0.6
+}
+```
+
+**Response**: Top-k relevant episodes with confidence scores
+
+---
+
+## Architecture
+
+```
+┌─────────────┐
+│   FastAPI   │ ← API Layer (rate limiting, auth)
+└──────┬──────┘
+       │
+┌──────▼──────┐
+│  Retrieval  │ ← Search pipeline (semantic + precondition)
+└──────┬──────┘
+       │
+┌──────▼──────┐
+│   KyroDB    │ ← Vector database (384-dim embeddings)
+└─────────────┘
+```
+
+**Storage**: KyroDB (fast vector search)  
+**Embeddings**: Sentence-Transformers (384-dim)  
+**Observability**: Prometheus + Grafana
+
+---
+
+## Deployment
 
 ### Docker Compose
 
@@ -39,114 +105,55 @@ uvicorn src.main:app --reload --port 8000
 docker-compose up -d
 ```
 
-Access:
-- API: http://localhost:8000
-- Docs: http://localhost:8000/docs
-- Metrics: http://localhost:8000/metrics
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000
-
----
-
-## Features
-
-**Core**: Multi-modal storage, semantic search (<50ms P99), precondition matching, intelligent ranking, temporal queries
-
-**Production**: Multi-tenancy, API key auth, rate limiting, Prometheus metrics, structured JSON logging, Kubernetes health checks, CI/CD, auto-scaling
-
-**Observability**: 25+ Prometheus metrics, structured logs with request context, Grafana dashboards, distributed tracing
-
----
-
-## API Usage
-
-```python
-import requests
-
-# Capture episode
-response = requests.post("http://localhost:8000/api/v1/capture",
-    headers={"X-API-Key": "your_api_key"},
-    json={
-        "episode_type": "failure",
-        "goal": "Deploy application",
-        "error_trace": "ImagePullBackOff: failed to resolve image",
-        "error_class": "resource_error",
-        "tags": ["production", "deployment"]
-    })
-
-# Search episodes
-response = requests.post("http://localhost:8000/api/v1/search",
-    headers={"X-API-Key": "your_api_key"},
-    json={
-        "goal": "Deploy with kubectl",
-        "k": 5,
-        "min_similarity": 0.6
-    })
-```
-
----
-
-## Deployment
+Includes: API, KyroDB, Prometheus, Grafana
 
 ### Kubernetes
 
 ```bash
-# Build
-./scripts/build.sh --prod --tag v1.0.0 --push
-
-# Deploy
-kubectl apply -k k8s/staging/
 kubectl apply -k k8s/production/
 ```
 
-### CI/CD
-
-Automated via GitHub Actions:
-- **Staging**: Auto-deploy on merge to `develop`
-- **Production**: Auto-deploy on tag `v*.*.*` (manual approval required)
-
-See [docs/CICD.md](docs/CICD.md) for details.
+Auto-scaling, health checks, metrics included.
 
 ---
 
 ## Development
 
 ```bash
-# Run tests
+# Test
 pytest tests/ -v --cov=src
 
 # Format
 black src/ tests/
-ruff check src/ tests/ --fix
+ruff check src/ --fix
 
-# Deploy manually
-./scripts/deploy.sh --env staging --dry-run
+# Type check
+mypy src/
 ```
+
+---
+
+## Performance
+
+- **Search latency**: \u003c50ms P99 (10K episodes)
+- **Throughput**: 1000 req/sec (single instance)
+- **Storage**: ~500KB per episode (with reflection)
 
 ---
 
 ## Documentation
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md) - Deployment guide
-- [CICD.md](docs/CICD.md) - CI/CD pipeline
-- [BILLING.md](docs/BILLING.md) - Stripe billing integration
-- [STRUCTURED_LOGGING.md](docs/STRUCTURED_LOGGING.md) - Logging guide
-
----
-
-## Status
-
-**Phase 1-4 Complete**: Multi-tenancy, auth, security, metrics, logging, health checks, containerization, CI/CD, Stripe billing
-
-**Phase 5-6 Planned**: Performance optimization, launch preparation
+- **[Architecture](docs/ARCHITECTURE.md)**: System design, data flow
+- **[Deployment](docs/DEPLOYMENT.md)**: Production setup
+- **[API Docs](http://localhost:8000/docs)**: Interactive OpenAPI
 
 ---
 
 ## License
 
-Business Source License 1.1 - Free for non-production use. See [LICENSE](LICENSE).
+Business Source License 1.1 - Free for non-production use  
+Commercial use requires license - Contact: [kishan@kyrodb.com]
 
 ---
 
-**Built with**: FastAPI, KyroDB, Prometheus, Grafana, Kubernetes, Docker
+**Stack**: Python 3.11+ • FastAPI • KyroDB • Docker • Kubernetes
