@@ -22,9 +22,7 @@ from src.models.skill import Skill
 from src.skills.promotion import SkillPromotionService
 
 
-# ============================================================================
 # Skill Model Tests
-# ============================================================================
 
 
 class TestSkillModel:
@@ -150,9 +148,7 @@ class TestSkillModel:
         assert skill.success_count == 4
 
 
-# ============================================================================
 # UsageStats Model Tests
-# ============================================================================
 
 
 class TestUsageStatsModel:
@@ -191,9 +187,7 @@ class TestUsageStatsModel:
         assert stats.fix_applied_count == 5
 
 
-# ============================================================================
 # Skills Promotion Service Tests
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -375,9 +369,7 @@ This will recreate the pod."""
         assert language is None
 
 
-# ============================================================================
 # KyroDB Skills Operations Tests
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -534,9 +526,7 @@ class TestSkillsKyroDBOperations:
         assert updated_metadata["success_count"] == "5"  # 4 + 1
 
 
-# ============================================================================
 # Success Validation Endpoint Tests
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -558,9 +548,7 @@ class TestSuccessValidationEndpoint:
         pass
 
 
-# ============================================================================
 # Run Tests
-# ============================================================================
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

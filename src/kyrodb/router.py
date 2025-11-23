@@ -46,8 +46,8 @@ class KyroDBRouter:
     """
     Routes requests to text and image KyroDB instances.
 
-    Provides a unified interface for multi-modal episodic memory storage.
-    # Phase 6: Clustering & Memory Hygiene Operations
+    Provides a unified interface for multi-modal episodic memory storage,
+    including clustering and memory hygiene operations.
     """
 
     def __init__(self, config: KyroDBConfig):
@@ -284,10 +284,7 @@ class KyroDBRouter:
         if not include_image_search:
             return text_response
 
-        # TODO: Implement multi-modal fusion
-        # For Phase 1, we'll just return text results
-        # Phase 2 will implement proper score fusion:
-        # combined_score = (1 - image_weight) * text_score + image_weight * image_score
+        
         logger.warning("Image search fusion not yet implemented - returning text results only")
         return text_response
 

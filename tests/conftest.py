@@ -33,6 +33,9 @@ from src.models.episode import (
     ErrorClass,
     Reflection,
 )
+from src.ingestion.capture import IngestionPipeline
+from src.retrieval.search import SearchPipeline
+from src.gating.service import GatingService
 
 
 @pytest.fixture
@@ -158,7 +161,7 @@ def mock_kyrodb_client() -> AsyncMock:
         "episode_type": "failure",
         "error_class": "resource_error",
         "tool": "kubectl",
-        "episode_json": """{"create_data": {"episode_type": "failure", "goal": "test goal", "tool_chain": ["kubectl"], "actions_taken": ["action1"], "error_trace": "error", "error_class": "resource_error", "tags": [], "severity": 3}, "episode_id": 123, "created_at": "2024-01-01T00:00:00Z", "retrieval_count": 0}""",
+        "episode_json": """{"create_data": {"episode_type": "failure", "goal": "test goal for validation", "tool_chain": ["kubectl"], "actions_taken": ["action1"], "error_trace": "error trace for validation", "error_class": "resource_error", "tags": [], "severity": 3}, "episode_id": 123, "created_at": "2024-01-01T00:00:00Z", "retrieval_count": 0}""",
     }
 
     search_response = Mock()
@@ -294,3 +297,40 @@ def app_client(
 
     # Clean up overrides
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def ingestion_pipeline(
+    mock_kyrodb_router: KyroDBRouter,
+    mock_embedding_service: EmbeddingService,
+) -> IngestionPipeline:
+    """Create ingestion pipeline with mock dependencies."""
+    return IngestionPipeline(
+        kyrodb_router=mock_kyrodb_router,
+        embedding_service=mock_embedding_service,
+        reflection_service=None,  # Skip LLM for integration tests
+    )
+
+
+@pytest.fixture
+def search_pipeline(
+    mock_kyrodb_router: KyroDBRouter,
+    mock_embedding_service: EmbeddingService,
+) -> SearchPipeline:
+    """Create search pipeline with mock dependencies."""
+    return SearchPipeline(
+        kyrodb_router=mock_kyrodb_router,
+        embedding_service=mock_embedding_service,
+    )
+
+
+@pytest.fixture
+def gating_service(
+    search_pipeline: SearchPipeline,
+    mock_kyrodb_router: KyroDBRouter,
+) -> GatingService:
+    """Create gating service with mock dependencies."""
+    return GatingService(
+        search_pipeline=search_pipeline,
+        kyrodb_router=mock_kyrodb_router,
+    )

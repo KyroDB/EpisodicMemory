@@ -38,7 +38,7 @@ class EpisodeRanker:
 
     # Phase 6: Power-law temporal decay (Ebbinghaus forgetting curve)
     # Configurable via ClusteringConfig
-    POWER_LAW_LAMBDA: float = 0.0001  # Decay rate
+    POWER_LAW_LAMBDA: float = 0.02  # Decay rate (tuned for ~43% retention at 90 days)
     POWER_LAW_BETA: float = 0.8  # Power exponent (0.5-1.2 models human memory)
     MIN_TEMPORAL_WEIGHT: float = 0.05  # Never fully forget
 
@@ -46,18 +46,23 @@ class EpisodeRanker:
     USAGE_LOG_BASE = 10.0  # log10 scaling for diminishing returns
     USAGE_MAX_COUNT = 1000.0  # Soft cap for normalization
 
-    def __init__(self, decay_lambda: float = 0.0001, decay_beta: float = 0.8, min_weight: float = 0.05):
+    def __init__(
+        self,
+        decay_lambda: Optional[float] = None,
+        decay_beta: Optional[float] = None,
+        min_weight: Optional[float] = None,
+    ):
         """
         Initialize episode ranker.
         
         Args:
-            decay_lambda: Power-law decay rate (Phase 6)
-            decay_beta: Power exponent for temporal weighting
-            min_weight: Minimum temporal weight (prevents total forgetting)
+            decay_lambda: Power-law decay rate (Phase 6). Defaults to POWER_LAW_LAMBDA.
+            decay_beta: Power exponent. Defaults to POWER_LAW_BETA.
+            min_weight: Minimum temporal weight. Defaults to MIN_TEMPORAL_WEIGHT.
         """
-        self.decay_lambda = decay_lambda
-        self.decay_beta = decay_beta
-        self.min_temporal_weight = min_weight
+        self.decay_lambda = decay_lambda if decay_lambda is not None else self.POWER_LAW_LAMBDA
+        self.decay_beta = decay_beta if decay_beta is not None else self.POWER_LAW_BETA
+        self.min_temporal_weight = min_weight if min_weight is not None else self.MIN_TEMPORAL_WEIGHT
 
     def rank_episodes(
         self,
@@ -181,11 +186,11 @@ class EpisodeRanker:
         Returns:
             float: Recency score (min_temporal_weight to 1.0)
         
-        Example (default λ=0.0001, β=0.8):
-            Episode created 1 day ago: score ≈ 0.99
-            Episode created 30 days ago: score ≈ 0.73
-            Episode created 180 days ago: score ≈ 0.23
-            Episode created 365 days ago: score ≈ 0.13
+        Example (default λ=0.02, β=0.8):
+            Episode created 1 day ago: score ≈ 0.98
+            Episode created 7 days ago: score ≈ 0.90
+            Episode created 30 days ago: score ≈ 0.69
+            Episode created 90 days ago: score ≈ 0.43
             Very old episodes: score → min_temporal_weight (0.05)
         """
         # Ensure both times are timezone-aware
@@ -301,14 +306,18 @@ class EpisodeRanker:
 _ranker: Optional[EpisodeRanker] = None
 
 
-def get_ranker(decay_lambda: float = 0.0001, decay_beta: float = 0.8, min_weight: float = 0.05) -> EpisodeRanker:
+def get_ranker(
+    decay_lambda: Optional[float] = None,
+    decay_beta: Optional[float] = None,
+    min_weight: Optional[float] = None
+) -> EpisodeRanker:
     """
     Get global ranker instance with Phase 6 power-law temporal weighting.
     
     Args:
-        decay_lambda: Power-law decay rate (from ClusteringConfig)
-        decay_beta: Power exponent (from ClusteringConfig)
-        min_weight: Minimum temporal weight (from ClusteringConfig)
+        decay_lambda: Power-law decay rate (from ClusteringConfig). Defaults to class constant.
+        decay_beta: Power exponent (from ClusteringConfig). Defaults to class constant.
+        min_weight: Minimum temporal weight (from ClusteringConfig). Defaults to class constant.
     
     Returns:
         EpisodeRanker: Singleton instance
