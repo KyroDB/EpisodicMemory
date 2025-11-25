@@ -93,21 +93,24 @@ class TestReflectionTier:
 class TestTierSelection:
     """Test automatic tier selection logic."""
     
-    def test_critical_error_uses_premium_via_tag(self, llm_config, critical_episode):
+    @pytest.mark.asyncio
+    async def test_critical_error_uses_premium_via_tag(self, llm_config, critical_episode):
         """Critical errors tagged properly should trigger premium tier (via tags check)."""
         service = TieredReflectionService(llm_config)
-        tier = service._select_tier(critical_episode)
+        tier = await service._select_tier(critical_episode)
         # Currently tags like "data_loss" don't trigger premium (not implemented)
         # So this should use CHEAP tier until tag logic is added
         assert tier == ReflectionTier.CHEAP  # Will be PREMIUM once tag logic implemented
     
-    def test_normal_error_uses_cheap(self, llm_config, sample_episode):
+    @pytest.mark.asyncio
+    async def test_normal_error_uses_cheap(self, llm_config, sample_episode):
         """Normal errors should use cheap tier by default."""
         service = TieredReflectionService(llm_config)
-        tier = service._select_tier(sample_episode)
+        tier = await service._select_tier(sample_episode)
         assert tier == ReflectionTier.CHEAP
     
-    def test_security_breach_triggers_cheap_until_implemented(self, llm_config):
+    @pytest.mark.asyncio
+    async def test_security_breach_triggers_cheap_until_implemented(self, llm_config):
         """Security breach tag doesn't trigger premium yet (tag-based selection not implemented)."""  
         episode = EpisodeCreate(
             customer_id="test",
@@ -119,17 +122,18 @@ class TestTierSelection:
             tags=["security_breach"]  # Tag not implemented yet
         )
         service = TieredReflectionService(llm_config)
-        tier = service._select_tier(episode)
+        tier = await service._select_tier(episode)
         # Tag-based selection not yet implemented, should use cheap
         assert tier == ReflectionTier.CHEAP
     
-    def test_premium_tag_triggers_premium(self, llm_config, sample_episode):
+    @pytest.mark.asyncio
+    async def test_premium_tag_triggers_premium(self, llm_config, sample_episode):
         """Explicit premium_reflection tag should trigger premium."""
         episode = sample_episode
         episode.tags = ["premium_reflection", "important"]
         
         service = TieredReflectionService(llm_config)
-        tier = service._select_tier(episode)
+        tier = await service._select_tier(episode)
         assert tier == ReflectionTier.PREMIUM
 
 

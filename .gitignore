@@ -79,9 +79,6 @@ htmlcov/
 *.whl
 
 # Project documentation
-EPISODIC_MEMORY_IMPLEMENTATION.md
-PROGRESS.md
-.env.example
 .github/copilot-instructions.md
-CORE_IMPLEMENTATION_ROADMAP.md
-PRODUCTION_DEPLOYMENT_CHECKLIST.md
+visualize_decay.py
+other_docs/
