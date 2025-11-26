@@ -469,7 +469,24 @@ Return ONLY valid JSON, no markdown."""
     async def _call_openrouter_model(
         self, model: str, user_prompt: str, max_retries: int
     ) -> Optional[LLMPerspective]:
-        """Call a model via OpenRouter with retry logic and validation."""
+        """
+        Call a model via OpenRouter with retry logic and validation.
+
+        Error handling strategy:
+        - Transient errors (429, 500, 502, 503, 504, timeouts): Retry with exponential backoff
+        - Permanent errors (400, 401, 403, 404): Fail immediately, no retry
+        - Validation errors (JSON parse, Pydantic): Retry (model output can vary)
+
+        Args:
+            model: OpenRouter model identifier (e.g., 'anthropic/claude-3.5-sonnet')
+            user_prompt: Sanitized user prompt
+            max_retries: Maximum retry attempts for transient failures
+
+        Returns:
+            LLMPerspective on success, None on failure
+        """
+        last_error = None
+
         for attempt in range(max_retries):
             try:
                 response = await self.openrouter_client.chat.completions.create(
@@ -495,22 +512,110 @@ Return ONLY valid JSON, no markdown."""
 
                 perspective = LLMPerspective(model_name=model, **data)
 
+                logger.info(
+                    "OpenRouter call succeeded",
+                    extra={
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "confidence": perspective.confidence_score,
+                    }
+                )
                 return perspective
 
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.error(f"{model} output validation failed: {e}")
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(
+                    "JSON parsing failed, will retry",
+                    extra={"model": model, "attempt": attempt + 1, "error": str(e)}
+                )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
+                logger.error(
+                    "JSON parsing failed after all retries",
+                    extra={"model": model, "attempts": max_retries, "error": str(e)}
+                )
+                return None
+
+            except ValidationError as e:
+                last_error = e
+                logger.warning(
+                    "Pydantic validation failed, will retry",
+                    extra={"model": model, "attempt": attempt + 1, "error": str(e)}
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.error(
+                    "Pydantic validation failed after all retries",
+                    extra={"model": model, "attempts": max_retries, "error": str(e)}
+                )
                 return None
 
             except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                last_error = e
+                error_str = str(e).lower()
+
+                # Categorize errors
+                is_rate_limit = "429" in str(e) or "rate" in error_str
+                is_timeout = "timeout" in error_str or "timed out" in error_str
+                is_server_error = any(
+                    code in str(e) for code in ["500", "502", "503", "504"]
+                )
+                is_auth_error = "401" in str(e) or "403" in str(e)
+                is_bad_request = "400" in str(e) or "404" in str(e)
+
+                # Permanent errors: fail immediately
+                if is_auth_error:
+                    logger.error(
+                        "Authentication failed (permanent)",
+                        extra={"model": model, "error": str(e)}
+                    )
+                    return None
+
+                if is_bad_request:
+                    logger.error(
+                        "Bad request (permanent)",
+                        extra={"model": model, "error": str(e)}
+                    )
+                    return None
+
+                # Transient errors: retry with backoff
+                is_transient = is_rate_limit or is_timeout or is_server_error
+
+                if is_transient and attempt < max_retries - 1:
+                    backoff = 2 ** attempt
+                    if is_rate_limit:
+                        backoff = min(backoff * 2, 30)  # Extra backoff for rate limits
+                    logger.warning(
+                        "Transient error, retrying",
+                        extra={
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "backoff_seconds": backoff,
+                            "is_rate_limit": is_rate_limit,
+                            "is_timeout": is_timeout,
+                            "error": str(e)
+                        }
+                    )
+                    await asyncio.sleep(backoff)
                     continue
-                logger.error(f"{model} call failed: {e}")
+
+                logger.error(
+                    "OpenRouter call failed",
+                    extra={
+                        "model": model,
+                        "attempts": attempt + 1,
+                        "error": str(e),
+                        "error_type": type(e).__name__
+                    }
+                )
                 return None
 
+        logger.error(
+            "OpenRouter call exhausted all retries",
+            extra={"model": model, "attempts": max_retries, "last_error": str(last_error)}
+        )
         return None
 
     async def _call_direct_openai(

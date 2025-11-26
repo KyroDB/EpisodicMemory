@@ -12,7 +12,7 @@ Design Decision: This system stores ONLY failures in episodic memory.
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EpisodeType(str, Enum):
@@ -55,6 +55,8 @@ class LLMPerspective(BaseModel):
     Security: All fields have strict validation to prevent prompt injection
     and memory poisoning attacks.
     """
+
+    model_config = ConfigDict(protected_namespaces=())
 
     model_name: str = Field(
         ...,
@@ -392,9 +394,9 @@ class EpisodeCreate(BaseModel):
     goal: str = Field(..., min_length=10, description="Original goal/intent")
 
     # Execution trace
-    tool_chain: list[str] = Field(..., min_items=1, description="Tools used in sequence")
+    tool_chain: list[str] = Field(..., min_length=1, description="Tools used in sequence")
     actions_taken: list[str] = Field(
-        ..., min_items=1, description="Actions executed before failure"
+        ..., min_length=1, description="Actions executed before failure"
     )
 
     # Failure context

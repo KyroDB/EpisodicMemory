@@ -14,6 +14,7 @@ Configuration:
 - expected_exception: Exception types that trigger circuit breaker
 """
 
+import functools
 import logging
 
 from pybreaker import CircuitBreaker, CircuitBreakerError
@@ -173,24 +174,50 @@ def with_kyrodb_circuit_breaker(func):
             return await self.kyrodb_client.search(...)
     """
 
+    @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        try:
-            # Call function through circuit breaker
-            result = await kyrodb_breaker.call_async(func, *args, **kwargs)
-            return result
-        except CircuitBreakerError as e:
-            # Circuit is open - fail fast
+        # Check if circuit is open before calling
+        state = kyrodb_breaker.current_state
+        if state == "open":
             logger.warning(
                 "KyroDB circuit breaker OPEN - failing fast",
                 extra={
                     "function": func.__name__,
-                    "state": kyrodb_breaker.current_state,
+                    "state": state,
                 },
             )
             raise KyroDBCircuitBreakerError(
                 f"KyroDB service unavailable (circuit breaker open). "
-                f"Retry after {kyrodb_breaker.timeout_duration} seconds."
-            ) from e
+                f"Retry after {kyrodb_breaker.reset_timeout} seconds."
+            )
+
+        try:
+            # Execute the async function directly
+            result = await func(*args, **kwargs)
+            # On success, reset state appropriately
+            # pybreaker resets fail_counter when a call succeeds through call()
+            # For async, we manually manage state since we bypass call()
+            if state == "half_open":
+                # Successful call in half-open state closes the circuit
+                kyrodb_breaker.close()
+            elif state == "closed":
+                # Reset fail counter on success in closed state
+                # This prevents accumulation of failures across successful calls
+                kyrodb_breaker._state._fail_counter = 0
+            return result
+        except Exception as e:
+            # Register failure with the circuit breaker by calling sync path
+            # with a function that raises the same exception type
+            def raise_original():
+                raise e
+
+            try:
+                kyrodb_breaker.call(raise_original)
+            except (type(e), CircuitBreakerError):
+                # Expected - we just want to register the failure
+                # CircuitBreakerError occurs if circuit just opened
+                pass
+            raise
 
     return wrapper
 
@@ -230,7 +257,7 @@ def with_stripe_circuit_breaker(func):
             )
             raise StripeCircuitBreakerError(
                 f"Stripe service unavailable (circuit breaker open). "
-                f"Retry after {stripe_breaker.timeout_duration} seconds."
+                f"Retry after {stripe_breaker.reset_timeout} seconds."
             ) from e
 
     return wrapper
