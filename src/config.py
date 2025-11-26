@@ -111,45 +111,41 @@ class LLMConfig(BaseSettings):
     """
     LLM configuration for multi-perspective reflection generation.
 
-    Supports three providers for consensus:
-    - OpenAI (GPT-4 Turbo)
-    - Anthropic (Claude 3.5 Sonnet)
-    - Google (Gemini 1.5 Pro)
+    Uses OpenRouter as unified API gateway for all LLM providers.
+    Supports 2-model consensus + 1 cheap tier model.
 
     Security: API keys are never logged or exposed in errors.
     """
 
     model_config = SettingsConfigDict(env_prefix="LLM_")
 
-    # OpenAI configuration
-    openai_api_key: str = Field(
+    # OpenRouter configuration (primary)
+    openrouter_api_key: str = Field(
         default="",
-        description="OpenAI API key for GPT-4"
+        description="OpenRouter API key for unified LLM access"
     )
-    openai_model_name: str = Field(
-        default="gpt-4-turbo-preview",
-        description="OpenAI model identifier"
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="OpenRouter API base URL"
     )
 
-    # Anthropic configuration
-    anthropic_api_key: str = Field(
-        default="",
-        description="Anthropic API key for Claude"
+    # Consensus models (2 models for multi-perspective reflection)
+    consensus_model_1: str = Field(
+        default="kwaipilot/kat-coder-pro:free",
+        description="First consensus model (structured extraction specialist)"
     )
-    anthropic_model_name: str = Field(
-        default="claude-3-5-sonnet-20241022",
-        description="Anthropic model identifier"
+    consensus_model_2: str = Field(
+        default="tngtech/deepseek-r1t2-chimera:free",
+        description="Second consensus model (deep reasoning)"
     )
 
-    # Google configuration
-    google_api_key: str = Field(
-        default="",
-        description="Google API key for Gemini"
+    # Cheap tier model
+    cheap_model: str = Field(
+        default="x-ai/grok-4.1-fast:free",
+        description="Cheap tier model for fast, cost-effective single reflections"
     )
-    google_model_name: str = Field(
-        default="gemini-1.5-pro",
-        description="Google model identifier"
-    )
+
+   
 
     # Shared parameters
     max_tokens: int = Field(
@@ -167,18 +163,18 @@ class LLMConfig(BaseSettings):
     )
 
     timeout_seconds: int = Field(
-        default=30,
+        default=60,
         ge=1,
-        le=120,
+        le=180,
         description="Timeout for LLM API calls"
     )
 
     # Cost limits (security: prevent abuse)
     max_cost_per_reflection_usd: float = Field(
-        default=1.0,
-        ge=0.01,
+        default=0.0,
+        ge=0.0,
         le=10.0,
-        description="Maximum allowed cost per reflection (abort if exceeded)"
+        description="Maximum allowed cost per reflection (0.0 for free tier)"
     )
 
     # Retry configuration
@@ -199,10 +195,10 @@ class LLMConfig(BaseSettings):
     # Backward compatibility (legacy single API key)
     api_key: str = Field(
         default="",
-        description="Legacy OpenAI API key (deprecated, use openai_api_key)"
+        description="Legacy OpenAI API key (deprecated, use openrouter_api_key)"
     )
 
-    @field_validator("openai_api_key", "anthropic_api_key", "google_api_key", "api_key")
+    @field_validator("openrouter_api_key", "openai_api_key", "anthropic_api_key", "google_api_key", "api_key")
     @classmethod
     def validate_api_key_security(cls, v: str, info) -> str:
         """
@@ -211,10 +207,8 @@ class LLMConfig(BaseSettings):
         Never expose API keys in logs or errors.
         """
         if not v:
-            # Empty is OK - reflection will be disabled for that provider
             return ""
 
-        # Check for placeholder values
         placeholder_patterns = [
             "your-api-key-here",
             "example",
@@ -230,7 +224,6 @@ class LLMConfig(BaseSettings):
             )
             return ""
 
-        # Basic length validation (real API keys are usually 40+ chars)
         if len(v) < 20:
             import logging
             field_name = info.field_name
@@ -244,16 +237,24 @@ class LLMConfig(BaseSettings):
     def has_any_api_key(self) -> bool:
         """Check if at least one LLM provider is configured."""
         return bool(
+            self.openrouter_api_key or
             self.openai_api_key or
             self.anthropic_api_key or
             self.google_api_key or
-            self.api_key  # Legacy fallback
+            self.api_key
         )
+
+    @property
+    def use_openrouter(self) -> bool:
+        """Check if OpenRouter should be used (preferred over direct providers)."""
+        return bool(self.openrouter_api_key)
 
     @property
     def enabled_providers(self) -> list[str]:
         """Get list of enabled LLM providers."""
         providers = []
+        if self.openrouter_api_key:
+            providers.append("openrouter")
         if self.openai_api_key or self.api_key:
             providers.append("openai")
         if self.anthropic_api_key:
@@ -264,7 +265,6 @@ class LLMConfig(BaseSettings):
 
     def model_post_init(self, __context):
         """Post-initialization: handle legacy api_key."""
-        # If legacy api_key is set but openai_api_key is not, migrate
         if self.api_key and not self.openai_api_key:
             self.openai_api_key = self.api_key
             import logging

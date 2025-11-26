@@ -3,7 +3,7 @@ Tiered reflection generation for cost optimization.
 
 Implements three-tier system:
 - CHEAP: Gemini Flash only (~$0.0003/reflection)
-- CACHED: Cluster templates (~$0, Phase 6)
+- CACHED: Cluster templates 
 - PREMIUM: Multi-perspective consensus (~$0.096/reflection)
 
 Security:

@@ -1,6 +1,9 @@
 """
 Multi-perspective reflection generation with consensus reconciliation.
 
+Uses OpenRouter as unified API gateway for multiple LLM models.
+Supports 2-model consensus for premium tier, 1-model for cheap tier.
+
 Security Features:
 - Prompt injection protection via input sanitization
 - Output validation with strict schema enforcement
@@ -10,8 +13,8 @@ Security Features:
 - All LLM outputs validated before storage
 
 Performance:
-- Parallel LLM calls (3 models in ~3-5 seconds)
-- Graceful degradation (works with 1/3, 2/3, or 3/3 models)
+- Parallel LLM calls (2 models in ~3-5 seconds)
+- Graceful degradation (works with 1/2 or 2/2 models)
 - Retry logic for transient failures
 """
 
@@ -24,26 +27,13 @@ from datetime import timezone, datetime
 from typing import Optional
 
 try:
-    from anthropic import APIConnectionError, APIError, AsyncAnthropic, RateLimitError
-    ANTHROPIC_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
-    ANTHROPIC_AVAILABLE = False
-    APIConnectionError = APIError = AsyncAnthropic = RateLimitError = None
-
-try:
     from openai import AsyncOpenAI
     OPENAI_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     OPENAI_AVAILABLE = False
     AsyncOpenAI = None
-from pydantic import ValidationError
 
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-    genai = None
+from pydantic import ValidationError
 
 from src.config import LLMConfig
 from src.models.episode import (
@@ -160,7 +150,10 @@ class PromptInjectionDefense:
 
 class MultiPerspectiveReflectionService:
     """
-    Generate reflections using 3 LLM models with consensus reconciliation.
+    Generate reflections using OpenRouter with 2-model consensus.
+
+    Uses OpenRouter API gateway to access multiple LLM providers through
+    a unified OpenAI-compatible interface.
 
     Security-first design:
     - All inputs sanitized before prompting
@@ -170,7 +163,6 @@ class MultiPerspectiveReflectionService:
     - Timeout enforcement on all API calls
     """
 
-    # System prompt (user data never mixed with this)
     SYSTEM_PROMPT = """You are an expert AI assistant analyzing software development failures.
 
 Extract the following in valid JSON format:
@@ -180,8 +172,8 @@ Extract the following in valid JSON format:
   "resolution_strategy": "Step-by-step resolution (be specific and actionable)",
   "environment_factors": ["OS/version/tool that matters"],
   "affected_components": ["Component 1", "Component 2"],
-  "generalization_score": 0.5,  // 0.0 to 1.0
-  "confidence_score": 0.8,      // 0.0 to 1.0
+  "generalization_score": 0.5,
+  "confidence_score": 0.8,
   "reasoning": "Brief explanation of your analysis"
 }
 
@@ -197,71 +189,61 @@ Return ONLY valid JSON, no markdown."""
 
     def __init__(self, config: LLMConfig):
         """
-        Initialize multi-perspective reflection service.
+        Initialize multi-perspective reflection service with OpenRouter.
 
         Args:
-            config: LLM configuration with API keys
+            config: LLM configuration with OpenRouter API key
 
         Raises:
-            ValueError: If no LLM providers are configured
+            ValueError: If no LLM provider is configured
         """
         self.config = config
 
-        # Initialize OpenAI client (optional dependency)
-        if config.openai_api_key and OPENAI_AVAILABLE:
-            api_key = config.openai_api_key or config.api_key
-            self.openai_client = AsyncOpenAI(
-                api_key=api_key,
+        # Initialize OpenRouter client (uses OpenAI SDK with custom base_url)
+        if config.use_openrouter and OPENAI_AVAILABLE:
+            self.openrouter_client = AsyncOpenAI(
+                api_key=config.openrouter_api_key,
+                base_url=config.openrouter_base_url,
                 timeout=config.timeout_seconds,
-                max_retries=0,  # We handle retries manually
+                max_retries=0,
+                default_headers={
+                    "HTTP-Referer": "https://kyrodb.dev",
+                    "X-Title": "EpisodicMemory",
+                }
             )
-            logger.info("OpenAI client initialized")
+            logger.info(
+                f"OpenRouter client initialized with models: "
+                f"consensus=[{config.consensus_model_1}, {config.consensus_model_2}], "
+                f"cheap={config.cheap_model}"
+            )
         else:
-            self.openai_client = None
+            self.openrouter_client = None
             if not OPENAI_AVAILABLE:
-                logger.warning("OpenAI SDK not installed; OpenAI disabled")
+                logger.warning("OpenAI SDK not installed; OpenRouter disabled")
             else:
-                logger.warning("OpenAI client not initialized (no API key)")
+                logger.warning("OpenRouter not configured (no API key)")
 
-        # Initialize Anthropic client (optional dependency)
-        if config.anthropic_api_key and ANTHROPIC_AVAILABLE:
-            self.anthropic_client = AsyncAnthropic(
-                api_key=config.anthropic_api_key,
+        # Fallback: Direct OpenAI client (legacy)
+        if config.openai_api_key and OPENAI_AVAILABLE and not config.use_openrouter:
+            self.openai_client = AsyncOpenAI(
+                api_key=config.openai_api_key,
                 timeout=config.timeout_seconds,
                 max_retries=0,
             )
-            logger.info("Anthropic client initialized")
+            logger.info("Direct OpenAI client initialized (legacy mode)")
         else:
-            self.anthropic_client = None
-            if not ANTHROPIC_AVAILABLE:
-                logger.warning("Anthropic SDK not installed; Anthropic disabled")
-            else:
-                logger.warning("Anthropic client not initialized (no API key)")
+            self.openai_client = None
 
-        # Initialize Gemini client
-        if config.google_api_key and GEMINI_AVAILABLE:
-            genai.configure(api_key=config.google_api_key)
-            self.gemini_model = genai.GenerativeModel(config.google_model_name)
-            logger.info("Gemini client initialized")
-        else:
-            self.gemini_model = None
-            if not GEMINI_AVAILABLE:
-                logger.warning("Gemini not available (google-generativeai not installed)")
-            else:
-                logger.warning("Gemini client not initialized (no API key)")
-
-        # Verify at least one provider is configured
         if not config.has_any_api_key:
             raise ValueError(
                 "At least one LLM API key must be configured "
-                "(openai_api_key, anthropic_api_key, or google_api_key)"
+                "(openrouter_api_key or openai_api_key)"
             )
 
         # Cost tracking
         self.total_cost_usd = 0.0
         self.total_requests = 0
         self.requests_by_model = Counter()
-        self.cost_by_model = Counter()
 
         logger.info(
             f"Multi-perspective reflection service initialized with providers: "
@@ -272,63 +254,73 @@ Return ONLY valid JSON, no markdown."""
         self,
         episode: EpisodeCreate,
         max_retries: Optional[int] = None,
+        use_cheap_tier: bool = False,
     ) -> Reflection:
         """
-        Generate reflection using available LLM models in parallel.
-
-        Security:
-        - All episode data sanitized before prompting
-        - Cost limits enforced
-        - Timeout enforced on all API calls
-        - Output validated against strict schema
+        Generate reflection using OpenRouter models in parallel.
 
         Args:
             episode: Episode data (will be sanitized)
             max_retries: Override default retry count
+            use_cheap_tier: Use single cheap model instead of consensus
 
         Returns:
-            Reflection with consensus (or single-model if only 1 available)
-
-        Raises:
-            No exceptions raised - falls back to heuristic on complete failure
+            Reflection with consensus (or single-model if cheap tier)
         """
         if max_retries is None:
             max_retries = self.config.max_retries
 
         start_time = time.perf_counter()
 
-        # Security: Sanitize all episode inputs
         sanitized_episode = self._sanitize_episode(episode)
-
-        # Build user prompt (user data goes here, never in system prompt)
         user_prompt = self._build_user_prompt(sanitized_episode)
 
-        # Determine which models to call
+        if use_cheap_tier:
+            return await self._generate_cheap_reflection(
+                sanitized_episode, user_prompt, max_retries, start_time
+            )
+
+        return await self._generate_consensus_reflection(
+            sanitized_episode, user_prompt, max_retries, start_time
+        )
+
+    async def _generate_consensus_reflection(
+        self,
+        episode: EpisodeCreate,
+        user_prompt: str,
+        max_retries: int,
+        start_time: float,
+    ) -> Reflection:
+        """Generate reflection using 2-model consensus via OpenRouter."""
         tasks = []
         task_names = []
 
-        if self.openai_client:
-            tasks.append(self._call_gpt4(user_prompt, max_retries))
-            task_names.append("gpt-4")
+        if self.openrouter_client:
+            tasks.append(
+                self._call_openrouter_model(
+                    self.config.consensus_model_1, user_prompt, max_retries
+                )
+            )
+            task_names.append(self.config.consensus_model_1)
 
-        if self.anthropic_client:
-            tasks.append(self._call_claude(user_prompt, max_retries))
-            task_names.append("claude")
-
-        if self.gemini_model:
-            tasks.append(self._call_gemini(user_prompt, max_retries))
-            task_names.append("gemini")
+            tasks.append(
+                self._call_openrouter_model(
+                    self.config.consensus_model_2, user_prompt, max_retries
+                )
+            )
+            task_names.append(self.config.consensus_model_2)
+        elif self.openai_client:
+            tasks.append(self._call_direct_openai(user_prompt, max_retries))
+            task_names.append(self.config.openai_model_name)
 
         if not tasks:
             logger.error("No LLM clients available")
-            return self._create_fallback_reflection(sanitized_episode)
+            return self._create_fallback_reflection(episode)
 
-        # Call all models in parallel
         try:
-            logger.info(f"Calling {len(tasks)} LLM models in parallel...")
+            logger.info(f"Calling {len(tasks)} LLM models in parallel for consensus...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Filter out failures
             perspectives = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
@@ -339,38 +331,22 @@ Return ONLY valid JSON, no markdown."""
 
             if not perspectives:
                 logger.error("All LLM models failed")
-                return self._create_fallback_reflection(sanitized_episode)
+                return self._create_fallback_reflection(episode)
 
-            # Reconcile perspectives into consensus
             logger.info(f"Reconciling {len(perspectives)} perspectives...")
             consensus = self._reconcile_perspectives(perspectives)
 
-            # Calculate cost
-            cost_usd = self._calculate_cost(perspectives)
+            cost_usd = 0.0  # Free tier
 
-            # Security: Enforce cost limit
-            if cost_usd > self.config.max_cost_per_reflection_usd:
-                logger.error(
-                    f"Reflection cost ${cost_usd:.4f} exceeds limit "
-                    f"${self.config.max_cost_per_reflection_usd:.2f}"
-                )
-                # Still return the reflection, but log for monitoring
-                # (already paid for it at this point)
-
-            # Track metrics
             self.total_cost_usd += cost_usd
             self.total_requests += 1
             for perspective in perspectives:
                 self.requests_by_model[perspective.model_name] += 1
-                # Cost tracking per model would require individual costs
 
-            # Calculate latency
             latency_ms = (time.perf_counter() - start_time) * 1000
 
-            # Build final reflection
             reflection = Reflection(
                 consensus=consensus,
-                # Populate top-level fields from consensus
                 root_cause=consensus.agreed_root_cause,
                 preconditions=consensus.agreed_preconditions,
                 resolution_strategy=consensus.agreed_resolution,
@@ -383,26 +359,168 @@ Return ONLY valid JSON, no markdown."""
                 generalization_score=sum(p.generalization_score for p in perspectives)
                 / len(perspectives),
                 confidence_score=consensus.consensus_confidence,
-                llm_model="multi-perspective",
+                llm_model="openrouter-consensus",
                 generated_at=datetime.now(timezone.utc),
                 cost_usd=cost_usd,
                 generation_latency_ms=latency_ms,
             )
 
             logger.info(
-                f"Multi-perspective reflection generated: "
+                f"Consensus reflection generated: "
                 f"{len(perspectives)}/{len(tasks)} models succeeded, "
                 f"consensus={consensus.consensus_method}, "
                 f"confidence={consensus.consensus_confidence:.2f}, "
-                f"cost=${cost_usd:.4f}, "
                 f"latency={latency_ms:.0f}ms"
             )
 
             return reflection
 
         except Exception as e:
-            logger.error(f"Multi-perspective reflection failed: {e}", exc_info=True)
-            return self._create_fallback_reflection(sanitized_episode)
+            logger.error(f"Consensus reflection failed: {e}", exc_info=True)
+            return self._create_fallback_reflection(episode)
+
+    async def _generate_cheap_reflection(
+        self,
+        episode: EpisodeCreate,
+        user_prompt: str,
+        max_retries: int,
+        start_time: float,
+    ) -> Reflection:
+        """Generate reflection using single cheap model via OpenRouter."""
+        try:
+            if self.openrouter_client:
+                perspective = await self._call_openrouter_model(
+                    self.config.cheap_model, user_prompt, max_retries
+                )
+            elif self.openai_client:
+                perspective = await self._call_direct_openai(user_prompt, max_retries)
+            else:
+                return self._create_fallback_reflection(episode)
+
+            if perspective is None:
+                return self._create_fallback_reflection(episode)
+
+            latency_ms = (time.perf_counter() - start_time) * 1000
+
+            self.total_requests += 1
+            self.requests_by_model[perspective.model_name] += 1
+
+            reflection = Reflection(
+                consensus=None,
+                root_cause=perspective.root_cause,
+                preconditions=perspective.preconditions,
+                resolution_strategy=perspective.resolution_strategy,
+                environment_factors=perspective.environment_factors,
+                affected_components=perspective.affected_components,
+                generalization_score=perspective.generalization_score,
+                confidence_score=perspective.confidence_score * 0.8,  # Discount for single model
+                llm_model=f"openrouter-cheap:{self.config.cheap_model}",
+                generated_at=datetime.now(timezone.utc),
+                cost_usd=0.0,
+                generation_latency_ms=latency_ms,
+            )
+
+            logger.info(
+                f"Cheap reflection generated: "
+                f"model={self.config.cheap_model}, "
+                f"confidence={reflection.confidence_score:.2f}, "
+                f"latency={latency_ms:.0f}ms"
+            )
+
+            return reflection
+
+        except Exception as e:
+            logger.error(f"Cheap reflection failed: {e}", exc_info=True)
+            return self._create_fallback_reflection(episode)
+
+    async def _call_openrouter_model(
+        self, model: str, user_prompt: str, max_retries: int
+    ) -> Optional[LLMPerspective]:
+        """Call a model via OpenRouter with retry logic and validation."""
+        for attempt in range(max_retries):
+            try:
+                response = await self.openrouter_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    timeout=self.config.timeout_seconds,
+                )
+
+                content = response.choices[0].message.content
+
+                # Extract JSON from markdown if needed
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0]
+
+                data = json.loads(content.strip())
+
+                perspective = LLMPerspective(model_name=model, **data)
+
+                return perspective
+
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.error(f"{model} output validation failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.error(f"{model} call failed: {e}")
+                return None
+
+        return None
+
+    async def _call_direct_openai(
+        self, user_prompt: str, max_retries: int
+    ) -> Optional[LLMPerspective]:
+        """Call OpenAI directly (legacy fallback)."""
+        for attempt in range(max_retries):
+            try:
+                response = await self.openai_client.chat.completions.create(
+                    model=self.config.openai_model_name,
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    response_format={"type": "json_object"},
+                    timeout=self.config.timeout_seconds,
+                )
+
+                content = response.choices[0].message.content
+                data = json.loads(content)
+                perspective = LLMPerspective(
+                    model_name=self.config.openai_model_name, **data
+                )
+
+                return perspective
+
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.error(f"OpenAI output validation failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.error(f"OpenAI call failed: {e}")
+                return None
+
+        return None
 
     def _sanitize_episode(self, episode: EpisodeCreate) -> EpisodeCreate:
         """
@@ -479,152 +597,6 @@ Return ONLY valid JSON, no markdown."""
             prompt_parts.append(f"\nResolution: {episode.resolution[:1000]}")
 
         return "\n".join(prompt_parts)
-
-    async def _call_gpt4(
-        self, user_prompt: str, max_retries: int
-    ) -> Optional[LLMPerspective]:
-        """Call GPT-4 with retry logic and validation."""
-        for attempt in range(max_retries):
-            try:
-                response = await self.openai_client.chat.completions.create(
-                    model=self.config.openai_model_name,
-                    messages=[
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    response_format={"type": "json_object"},  # Force JSON
-                    timeout=self.config.timeout_seconds,
-                )
-
-                content = response.choices[0].message.content
-
-                # Security: Validate JSON structure
-                data = json.loads(content)
-
-                # Security: Validate against schema (prevents malicious output)
-                perspective = LLMPerspective(
-                    model_name=self.config.openai_model_name, **data
-                )
-
-                return perspective
-
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.error(f"GPT-4 output validation failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                return None
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                logger.error(f"GPT-4 call failed: {e}")
-                return None
-
-        return None
-
-    async def _call_claude(
-        self, user_prompt: str, max_retries: int
-    ) -> Optional[LLMPerspective]:
-        """Call Claude with retry logic and validation."""
-        for attempt in range(max_retries):
-            try:
-                response = await self.anthropic_client.messages.create(
-                    model=self.config.anthropic_model_name,
-                    max_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature,
-                    system=self.SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": user_prompt}],
-                    timeout=self.config.timeout_seconds,
-                )
-
-                content = response.content[0].text
-
-                # Claude doesn't have JSON mode - extract JSON from markdown
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0]
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0]
-
-                # Security: Validate JSON
-                data = json.loads(content.strip())
-
-                # Security: Validate against schema
-                perspective = LLMPerspective(
-                    model_name=self.config.anthropic_model_name, **data
-                )
-
-                return perspective
-
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.error(f"Claude output validation failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                return None
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                logger.error(f"Claude call failed: {e}")
-                return None
-
-        return None
-
-    async def _call_gemini(
-        self, user_prompt: str, max_retries: int
-    ) -> Optional[LLMPerspective]:
-        """Call Gemini with retry logic and validation."""
-        for attempt in range(max_retries):
-            try:
-                full_prompt = f"{self.SYSTEM_PROMPT}\n\n{user_prompt}"
-
-                response = await asyncio.to_thread(
-                    self.gemini_model.generate_content,
-                    full_prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=self.config.temperature,
-                        max_output_tokens=self.config.max_tokens,
-                    ),
-                )
-
-                content = response.text
-
-                # Gemini also doesn't have JSON mode - extract JSON
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0]
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0]
-
-                # Security: Validate JSON
-                data = json.loads(content.strip())
-
-                # Security: Validate against schema
-                perspective = LLMPerspective(
-                    model_name=self.config.google_model_name, **data
-                )
-
-                return perspective
-
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.error(f"Gemini output validation failed: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                return None
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                logger.error(f"Gemini call failed: {e}")
-                return None
-
-        return None
 
     def _reconcile_perspectives(
         self, perspectives: list[LLMPerspective]
@@ -711,37 +683,6 @@ Return ONLY valid JSON, no markdown."""
                     merged.append(item)
                     seen.add(item)
         return merged
-
-    def _calculate_cost(self, perspectives: list[LLMPerspective]) -> float:
-        """
-        Estimate cost based on models used.
-
-        Approximate pricing (Nov 2024):
-        - GPT-4 Turbo: $0.01/1K input + $0.03/1K output ≈ $0.043 per call
-        - Claude 3.5 Sonnet: $0.003/1K input + $0.015/1K output ≈ $0.016 per call
-        - Gemini 1.5 Pro: $0.00125/1K input + $0.005/1K output ≈ $0.006 per call
-
-        Assumes ~2800 input tokens, ~500 output tokens.
-        """
-        cost_map = {
-            "gpt-4-turbo-preview": 0.043,
-            "claude-3-5-sonnet-20241022": 0.016,
-            "claude-3.5-sonnet": 0.016,  # Alias
-            "gemini-1.5-pro": 0.006,
-        }
-
-        total = 0.0
-        for perspective in perspectives:
-            # Match model name (exact or prefix)
-            cost = 0.02  # Default
-            for model_key, model_cost in cost_map.items():
-                if model_key in perspective.model_name:
-                    cost = model_cost
-                    break
-
-            total += cost
-
-        return total
 
     def _create_fallback_reflection(self, episode: EpisodeCreate) -> Reflection:
         """
