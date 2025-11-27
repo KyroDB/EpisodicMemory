@@ -33,20 +33,68 @@ def get_test_api_key() -> str:
     return key
 
 
+def _require_env(name: str) -> str:
+    """Get required environment variable or skip test."""
+    value = os.environ.get(name, "")
+    if not value:
+        pytest.skip(f"{name} not set - required for OpenRouter tests")
+    return value
+
+
+def _safe_float(name: str, default: float) -> float:
+    """
+    Parse environment variable as float with proper error handling.
+    
+    Args:
+        name: Environment variable name
+        default: Default value if env var is not set or invalid
+        
+    Returns:
+        Parsed float value or default
+    """
+    raw_value = os.environ.get(name, "")
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        pytest.fail(f"Invalid float value for {name}: '{raw_value}'")
+
+
+def _safe_int(name: str, default: int) -> int:
+    """
+    Parse environment variable as int with proper error handling.
+    
+    Args:
+        name: Environment variable name
+        default: Default value if env var is not set or invalid
+        
+    Returns:
+        Parsed int value or default
+    """
+    raw_value = os.environ.get(name, "")
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        pytest.fail(f"Invalid int value for {name}: '{raw_value}'")
+
+
 @pytest.fixture
 def real_llm_config() -> LLMConfig:
-    """Create LLM config with real OpenRouter API key."""
+    """Create LLM config from environment variables. All model names come from .env."""
     api_key = get_test_api_key()
     return LLMConfig(
         openrouter_api_key=api_key,
-        openrouter_base_url="https://openrouter.ai/api/v1",
-        consensus_model_1="anthropic/claude-3.5-sonnet",
-        consensus_model_2="openai/gpt-4-turbo-preview",
-        cheap_model="google/gemini-flash-1.5",
-        temperature=0.3,
-        max_tokens=2000,
-        max_retries=2,
-        timeout_seconds=60,
+        openrouter_base_url=_require_env("LLM_OPENROUTER_BASE_URL"),
+        consensus_model_1=_require_env("LLM_CONSENSUS_MODEL_1"),
+        consensus_model_2=_require_env("LLM_CONSENSUS_MODEL_2"),
+        cheap_model=_require_env("LLM_CHEAP_MODEL"),
+        temperature=_safe_float("LLM_TEMPERATURE", 0.3),
+        max_tokens=_safe_int("LLM_MAX_TOKENS", 2000),
+        max_retries=_safe_int("LLM_MAX_RETRIES", 2),
+        timeout_seconds=_safe_int("LLM_TIMEOUT_SECONDS", 60),
     )
 
 
@@ -137,8 +185,11 @@ class TestOpenRouterAPI:
         assert len(reflection.preconditions) > 0, "Should have at least one precondition"
         assert 0 <= reflection.confidence_score <= 1, "Confidence should be 0-1"
         assert 0 <= reflection.generalization_score <= 1, "Generalization should be 0-1"
-        assert "cheap" in reflection.llm_model.lower() or "gemini" in reflection.llm_model.lower(), \
-            f"Should use cheap model, got {reflection.llm_model}"
+        # Verify LLM was actually called (not fallback heuristic)
+        assert reflection.llm_model != "fallback_heuristic", \
+            f"Should use real LLM, not fallback. Check API key and model availability."
+        # Verify cost tracking (should be >= 0 for real API call, even for free models)
+        assert reflection.generation_latency_ms > 0, "Should have non-zero latency from real API call"
 
     @pytest.mark.skipif(
         not os.environ.get("LLM_OPENROUTER_API_KEY"),
@@ -213,13 +264,13 @@ class TestOpenRouterAPI:
         
         Should fall back gracefully without crashing.
         """
-        # Create config with invalid model
+        # Create config with invalid model names to test error handling
         bad_config = LLMConfig(
             openrouter_api_key=real_llm_config.openrouter_api_key,
             openrouter_base_url=real_llm_config.openrouter_base_url,
             consensus_model_1="invalid/nonexistent-model-xyz",
             consensus_model_2="also/not-real-model",
-            cheap_model="google/gemini-flash-1.5",  # Keep a valid fallback
+            cheap_model=real_llm_config.cheap_model,  # Use valid cheap model from env
             temperature=0.3,
             max_tokens=1000,
             max_retries=1,

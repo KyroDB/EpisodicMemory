@@ -498,10 +498,17 @@ class TestPreconditionMatching:
                 print(f"    {i+1}. Score={result.score:.4f}: {goal}")
                 print(f"       Preconditions: {preconditions}")
             
+            # Explicit assertion that results were returned - do not silently skip
+            assert len(results.results) > 0, (
+                "Search should return at least one result. "
+                "Verify episodes were inserted and collection namespace is correct."
+            )
+            
             # First result should be very similar
-            if results.results:
-                assert results.results[0].score > 0.9, "Top result should have high similarity"
-                print(f"\n  Top match similarity: {results.results[0].score:.4f} (>0.9 required)")
+            assert results.results[0].score > 0.9, (
+                f"Top result should have high similarity (>0.9), got {results.results[0].score:.4f}"
+            )
+            print(f"\n  Top match similarity: {results.results[0].score:.4f} (>0.9 required)")
             
             # Query for database migration (different domain)
             print("\n--- Searching for 'Database migration' similarity ---")
@@ -513,9 +520,12 @@ class TestPreconditionMatching:
                 k=3,
             )
             
-            if db_results.results:
-                top_goal = db_results.results[0].metadata.get("goal", "N/A")
-                print(f"  Top match: {top_goal} (score={db_results.results[0].score:.4f})")
+            # Explicit assertion for second search as well
+            assert len(db_results.results) > 0, (
+                "Database migration search should return results"
+            )
+            top_goal = db_results.results[0].metadata.get("goal", "N/A")
+            print(f"  Top match: {top_goal} (score={db_results.results[0].score:.4f})")
             
         finally:
             print("\n--- Cleanup ---")

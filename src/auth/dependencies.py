@@ -255,3 +255,64 @@ def get_customer_id_from_request(request: Request) -> str:
         )
 
     return request.state.customer.customer_id
+
+
+async def require_admin_access(
+    x_admin_api_key: Optional[str] = Header(None, alias="X-Admin-API-Key"),
+) -> None:
+    """
+    Validate admin API key for admin-only endpoints.
+    
+    Security:
+        - Requires X-Admin-API-Key header with valid admin key
+        - If ADMIN_API_KEY is not configured, endpoint is UNPROTECTED (logs warning)
+        - Use constant-time comparison to prevent timing attacks
+        
+    Args:
+        x_admin_api_key: Admin API key from header
+        
+    Returns:
+        None (validation passes)
+        
+    Raises:
+        HTTPException 401: Missing or invalid admin API key
+        
+    Usage:
+        @app.get("/admin/budget")
+        async def get_budget(_: None = Depends(require_admin_access)):
+            # Only accessible with valid admin API key
+            ...
+    """
+    from src.config import get_settings
+    import secrets
+    
+    settings = get_settings()
+    configured_key = settings.admin_api_key
+    
+    # If no admin key is configured, block access (fail closed)
+    # This ensures admin endpoints are always protected
+    if configured_key is None:
+        logger.warning(
+            "Admin endpoint blocked: ADMIN_API_KEY not configured. "
+            "Set ADMIN_API_KEY environment variable to enable admin access."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin API key not configured on server",
+        )
+    
+    if x_admin_api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Admin-API-Key header",
+            headers={"WWW-Authenticate": "X-Admin-API-Key"},
+        )
+    
+    # Use constant-time comparison to prevent timing attacks
+    if not secrets.compare_digest(x_admin_api_key, configured_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin API key",
+        )
+    
+    logger.debug("Admin access validated successfully")

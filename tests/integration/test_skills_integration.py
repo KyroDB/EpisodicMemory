@@ -135,11 +135,22 @@ class TestSkillsCollection:
         customer_id = f"test_customer_{uuid4().hex[:8]}"
         skill_ids = []
         
-        # Create skills with different embeddings that are still similar enough
-        # Using embeddings that will both pass the similarity threshold
+        # Create embeddings with actual directional variation for meaningful cosine similarity.
+        # Uniform vectors like [0.8]*384 are all parallel (cosine similarity = 1.0).
+        # Instead, we use embeddings where first half differs to create actual angular separation.
+        
+        # Query embedding: first half high, second half low
+        query_embedding = [0.8] * 192 + [0.2] * 192
+        
+        # Similar embedding: same pattern as query (high first half, low second half)
+        similar_embedding = [0.75] * 192 + [0.25] * 192
+        
+        # Different embedding: opposite pattern (low first half, high second half)
+        different_embedding = [0.2] * 192 + [0.8] * 192
+        
         skills_data = [
-            ("Python debugging techniques", [0.8] * 384),  # Similar to query
-            ("Database optimization", [0.3] * 384),  # Different from query
+            ("Python debugging techniques", similar_embedding),  # Similar to query
+            ("Database optimization", different_embedding),  # Different from query
         ]
         
         try:
@@ -158,10 +169,7 @@ class TestSkillsCollection:
                 
                 await kyrodb_router.insert_skill(skill=skill, embedding=emb)
             
-            # Search with embedding more similar to first skill
-            query_embedding = [0.75] * 384
-            
-            # Use low min_score to ensure we find both skills
+            # Search with query embedding
             results = await kyrodb_router.search_skills(
                 query_embedding=query_embedding,
                 customer_id=customer_id,
@@ -187,9 +195,13 @@ class TestSkillsCollection:
                     pass
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Namespace isolation requires KyroDB fix - skills search currently not filtering by namespace")
     async def test_search_skills_customer_isolation(self, kyrodb_router: KyroDBRouter):
-        """Test that skills are isolated by customer_id."""
+        """Test that skills are isolated by customer_id.
+        
+        Namespace isolation is enforced by KyroDB server-side filtering.
+        The namespace is stored as '__namespace__' metadata on insert and
+        filtered during search to ensure customer data isolation.
+        """
         customer_a = f"customer_a_{uuid4().hex[:8]}"
         customer_b = f"customer_b_{uuid4().hex[:8]}"
         skill_ids = []

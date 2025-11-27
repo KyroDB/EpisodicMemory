@@ -12,6 +12,8 @@ Designed for <50ms P99 latency.
 import time
 from contextlib import asynccontextmanager
 from datetime import timezone, datetime
+from enum import Enum
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +26,7 @@ from slowapi.util import get_remote_address
 from src.auth import (
     get_authenticated_customer,
     get_customer_id_from_request,
+    require_admin_access,
 )
 from src.config import get_settings
 from src.ingestion.capture import IngestionPipeline
@@ -684,21 +687,28 @@ async def capture_episode(
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
         # Track business metrics (Phase 2 Week 5)
-        track_ingestion_credits(
-            customer_id=customer_id,
-            customer_tier=customer.subscription_tier.value,
-            credits_used=credits_used,
-            has_image=episode_data.screenshot_path is not None,
-            has_reflection=generate_reflection and reflection_service is not None,
-        )
+        # Wrapped in try-except to prevent telemetry failures from breaking the request
+        try:
+            track_ingestion_credits(
+                customer_id=customer_id,
+                customer_tier=customer.subscription_tier.value,
+                credits_used=credits_used,
+                has_image=episode_data.screenshot_path is not None,
+                has_reflection=generate_reflection and reflection_service is not None,
+            )
+        except Exception as e:
+            logger.warning(f"Metrics tracking failed (non-fatal): {e}")
 
         # Update customer quota gauge
-        update_customer_quota_usage(
-            customer_id=customer_id,
-            customer_tier=customer.subscription_tier.value,
-            credits_used=customer.credits_used_current_month + int(credits_used),
-            monthly_limit=customer.monthly_credit_limit,
-        )
+        try:
+            update_customer_quota_usage(
+                customer_id=customer_id,
+                customer_tier=customer.subscription_tier.value,
+                credits_used=customer.credits_used_current_month + int(credits_used),
+                monthly_limit=customer.monthly_credit_limit,
+            )
+        except Exception as e:
+            logger.warning(f"Quota gauge update failed (non-fatal): {e}")
 
         return CaptureResponse(
             episode_id=episode.episode_id,
@@ -1015,20 +1025,27 @@ async def search_episodes(
             logger.error(f"Usage tracking failed: {e}", exc_info=True)
 
         # Track business metrics (Phase 2 Week 5)
-        track_search_credits(
-            customer_id=customer_id,
-            customer_tier=customer.subscription_tier.value,
-            credits_used=credits_used,
-            results_returned=response.total_returned,
-        )
+        # Wrapped in try-except to prevent telemetry failures from breaking the request
+        try:
+            track_search_credits(
+                customer_id=customer_id,
+                customer_tier=customer.subscription_tier.value,
+                credits_used=credits_used,
+                results_returned=response.total_returned,
+            )
+        except Exception as e:
+            logger.warning(f"Metrics tracking failed (non-fatal): {e}")
 
         # Update customer quota gauge
-        update_customer_quota_usage(
-            customer_id=customer_id,
-            customer_tier=customer.subscription_tier.value,
-            credits_used=customer.credits_used_current_month + 1,  # Rounded to 1
-            monthly_limit=customer.monthly_credit_limit,
-        )
+        try:
+            update_customer_quota_usage(
+                customer_id=customer_id,
+                customer_tier=customer.subscription_tier.value,
+                credits_used=customer.credits_used_current_month + 1,  # Rounded to 1
+                monthly_limit=customer.monthly_credit_limit,
+            )
+        except Exception as e:
+            logger.warning(f"Quota gauge update failed (non-fatal): {e}")
 
         return response
 
@@ -1107,6 +1124,38 @@ async def reflect_before_action(
 
 
 # Admin endpoints
+
+def _enum_key_to_str(key: Any) -> str:
+    """
+    Convert dictionary key to string, handling Enum types properly.
+    
+    Uses isinstance(key, Enum) instead of hasattr(key, 'value') for robust
+    enum detection that won't match arbitrary objects with 'value' attribute.
+    
+    Args:
+        key: Dictionary key (may be Enum, string, or other type)
+        
+    Returns:
+        String representation of the key
+    """
+    if isinstance(key, Enum):
+        return key.value
+    return str(key)
+
+
+def _convert_dict_enum_keys(d: dict) -> dict:
+    """
+    Convert all enum keys in a dictionary to their string values.
+    
+    Args:
+        d: Dictionary with potentially enum keys
+        
+    Returns:
+        Dictionary with all keys converted to strings
+    """
+    return {_enum_key_to_str(k): v for k, v in d.items()}
+
+
 class BudgetResponse(BaseModel):
     """Daily budget status response."""
 
@@ -1127,9 +1176,9 @@ class BudgetResponse(BaseModel):
     response_model=BudgetResponse,
     tags=["Admin"],
     summary="Check daily LLM budget status",
-    description="Returns current daily cost, budget remaining, and tier blocking status.",
+    description="Returns current daily cost, budget remaining, and tier blocking status. Requires X-Admin-API-Key header if ADMIN_API_KEY is configured.",
 )
-async def get_budget_status():
+async def get_budget_status(_: None = Depends(require_admin_access)):
     """
     Check daily LLM budget status.
 
@@ -1138,6 +1187,10 @@ async def get_budget_status():
 
     This endpoint is for monitoring and debugging LLM costs.
     Premium tier is automatically blocked when daily spend >= $50.
+    
+    Security:
+        - Requires X-Admin-API-Key header if ADMIN_API_KEY environment variable is set.
+        - If ADMIN_API_KEY is not configured, endpoint is unprotected (warning logged).
 
     Returns:
         BudgetResponse: Current budget status
@@ -1168,8 +1221,8 @@ async def get_budget_status():
         limit_exceeded=daily.get("limit_exceeded", False),
         budget_remaining_usd=daily.get("budget_remaining_usd", 50.0),
         premium_tier_blocked=daily.get("limit_exceeded", False),
-        cost_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("cost_by_tier", {}).items()},
-        count_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("count_by_tier", {}).items()},
+        cost_by_tier=_convert_dict_enum_keys(stats.get("cost_by_tier", {})),
+        count_by_tier=_convert_dict_enum_keys(stats.get("count_by_tier", {})),
     )
 
 
@@ -1192,9 +1245,9 @@ class ReflectionStatsResponse(BaseModel):
     response_model=ReflectionStatsResponse,
     tags=["Admin"],
     summary="Get reflection generation statistics",
-    description="Returns detailed statistics about reflection generation including cost savings.",
+    description="Returns detailed statistics about reflection generation including cost savings. Requires X-Admin-API-Key header if ADMIN_API_KEY is configured.",
 )
-async def get_reflection_stats():
+async def get_reflection_stats(_: None = Depends(require_admin_access)):
     """
     Get reflection generation statistics.
 
@@ -1203,6 +1256,10 @@ async def get_reflection_stats():
     - Cost breakdown by tier (cheap/cached/premium)
     - Cost savings vs all-premium baseline
     - Daily cost tracking
+    
+    Security:
+        - Requires X-Admin-API-Key header if ADMIN_API_KEY environment variable is set.
+        - If ADMIN_API_KEY is not configured, endpoint is unprotected (warning logged).
 
     Returns:
         ReflectionStatsResponse: Reflection statistics
@@ -1229,9 +1286,9 @@ async def get_reflection_stats():
         cost_savings_usd=stats.get("cost_savings_usd", 0.0),
         cost_savings_percentage=stats.get("cost_savings_percentage", 0.0),
         daily_cost=stats.get("daily_cost", {}),
-        cost_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("cost_by_tier", {}).items()},
-        count_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("count_by_tier", {}).items()},
-        percentage_by_tier={k.value if hasattr(k, 'value') else str(k): v for k, v in stats.get("percentage_by_tier", {}).items()},
+        cost_by_tier=_convert_dict_enum_keys(stats.get("cost_by_tier", {})),
+        count_by_tier=_convert_dict_enum_keys(stats.get("count_by_tier", {})),
+        percentage_by_tier=_convert_dict_enum_keys(stats.get("percentage_by_tier", {})),
     )
 
 

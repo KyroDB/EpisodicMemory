@@ -576,6 +576,48 @@ class Settings(BaseSettings):
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     stripe: StripeConfig = Field(default_factory=StripeConfig)
+    
+    # Admin authentication (optional but recommended for production)
+    # Set ADMIN_API_KEY in environment to protect admin endpoints
+    admin_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for admin endpoints (required for admin access)"
+    )
+
+    @field_validator("admin_api_key")
+    @classmethod
+    def validate_admin_api_key_security(cls, v: Optional[str]) -> Optional[str]:
+        """
+        Security: Validate admin API key format and prevent common mistakes.
+
+        Never expose API keys in logs or errors.
+        """
+        if not v:
+            return None
+
+        placeholder_patterns = [
+            "your-api-key-here",
+            "admin",
+            "example",
+            "dummy",
+            "test",
+        ]
+
+        v_lower = v.lower()
+        if any(pattern in v_lower for pattern in placeholder_patterns):
+            import logging
+            logging.warning(
+                "admin_api_key appears to be a placeholder - admin endpoints will be BLOCKED"
+            )
+            return None
+
+        if len(v) < 32:
+            import logging
+            logging.warning(
+                "admin_api_key seems too short to be secure - use at least 32 characters"
+            )
+
+        return v
 
     def validate_configuration(self) -> None:
         """

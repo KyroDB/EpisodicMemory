@@ -20,13 +20,16 @@ from src.config import KyroDBConfig
 
 
 def is_kyrodb_running(host: str = "localhost", port: int = 50051) -> bool:
-    """Check if KyroDB is running on the specified host:port."""
+    """
+    Check if KyroDB is running on the specified host:port.
+
+    Uses context manager for socket to ensure proper resource cleanup.
+    """
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1)
+            result = sock.connect_ex((host, port))
+            return result == 0
     except Exception:
         return False
 
@@ -43,6 +46,8 @@ async def kyrodb_client():
     """
     Create a real KyroDB client connected to localhost:50051.
     
+    Uses try/finally to ensure proper resource cleanup even on test failure.
+    
     Usage:
         @pytest.mark.asyncio
         async def test_something(skip_if_no_kyrodb, kyrodb_client):
@@ -57,8 +62,10 @@ async def kyrodb_client():
         enable_tls=False,
     )
     await client.connect()
-    yield client
-    await client.close()
+    try:
+        yield client
+    finally:
+        await client.close()
 
 
 @pytest.fixture
@@ -67,6 +74,7 @@ async def kyrodb_router():
     Create a KyroDBRouter connected to localhost:50051.
     
     Uses same port for both text and image (single-instance testing).
+    Uses try/finally to ensure proper resource cleanup even on test failure.
     
     Usage:
         @pytest.mark.asyncio
@@ -84,15 +92,25 @@ async def kyrodb_router():
     )
     router = KyroDBRouter(config=config)
     await router.connect()
-    yield router
-    await router.close()
+    try:
+        yield router
+    finally:
+        await router.close()
 
 
 @pytest.fixture
 def test_customer_id() -> str:
-    """Generate a test customer ID for namespace isolation."""
+    """
+    Generate a test customer ID for namespace isolation.
+    
+    Uses millisecond precision and includes random suffix to prevent collisions
+    when tests run in rapid succession.
+    """
     import time
-    return f"test-customer-{int(time.time())}"
+    import random
+    timestamp_ms = int(time.time() * 1000)
+    random_suffix = random.randint(1000, 9999)
+    return f"test-customer-{timestamp_ms}-{random_suffix}"
 
 
 @pytest.fixture
