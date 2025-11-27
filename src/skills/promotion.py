@@ -167,7 +167,7 @@ class SkillPromotionService:
         Returns:
             Episode if found, None otherwise
         """
-        from src.utils.kyrodb_namespace import get_namespaced_collection
+        from src.kyrodb.router import get_namespaced_collection
 
         collection = "failures"
         namespaced_collection = get_namespaced_collection(customer_id, collection)
@@ -246,7 +246,7 @@ class SkillPromotionService:
         Returns:
             list: Similar episodes that meet criteria
         """
-        from src.utils.kyrodb_namespace import get_namespaced_collection
+        from src.kyrodb.router import get_namespaced_collection
 
         collection = "failures"
         namespaced_collection = get_namespaced_collection(customer_id, collection)

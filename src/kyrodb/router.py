@@ -944,7 +944,7 @@ class KyroDBRouter:
         skill_id: int,
         customer_id: str,
         success: bool,
-    ) -> bool:
+    ) -> Optional["Skill"]:
         """
         Update skill usage statistics after application.
 
@@ -958,7 +958,7 @@ class KyroDBRouter:
             success: Whether the skill application succeeded
 
         Returns:
-            bool: True if update successful
+            Optional[Skill]: Updated skill object if successful, None otherwise
         """
         from src.models.skill import Skill
 
@@ -980,7 +980,7 @@ class KyroDBRouter:
                 logger.error(
                     f"Skill {skill_id} not found in {namespaced_collection}"
                 )
-                return False
+                return None
 
             # Security: Verify customer ID
             existing_customer = existing.metadata.get("customer_id")
@@ -989,7 +989,7 @@ class KyroDBRouter:
                     f"Customer ID mismatch: skill {skill_id} belongs to "
                     f"{existing_customer}, not {customer_id}"
                 )
-                return False
+                return None
 
             # Deserialize skill
             skill = Skill.from_metadata_dict(skill_id, dict(existing.metadata))
@@ -1014,17 +1014,17 @@ class KyroDBRouter:
                     f"Updated skill {skill_id} stats: "
                     f"usage={skill.usage_count}, success_rate={skill.success_rate:.2f}"
                 )
-                return True
+                return skill
             else:
                 logger.error(f"Skill stats update failed: {response.error}")
-                return False
+                return None
 
         except Exception as e:
             logger.error(
                 f"Failed to update skill {skill_id} stats: {e}",
                 exc_info=True
             )
-            return False
+            return None
 
     async def health_check(self) -> dict[str, bool]:
         """

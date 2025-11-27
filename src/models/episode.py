@@ -356,12 +356,24 @@ class Reflection(BaseModel):
     @field_validator("root_cause", "resolution_strategy")
     @classmethod
     def sanitize_text(cls, v: str) -> str:
-        """Security: Sanitize text fields."""
+        """
+        Security: Sanitize text fields while preserving structure.
+        
+        Preserves newlines for code blocks and procedures while:
+        - Removing null bytes (security)
+        - Normalizing horizontal whitespace (spaces/tabs)
+        - Limiting consecutive blank lines to 2
+        """
+        import re
         # Remove null bytes
         v = v.replace("\x00", "")
-        # Normalize whitespace
-        v = " ".join(v.split())
-        return v.strip()
+        # Normalize horizontal whitespace (tabs -> spaces, multiple spaces -> single)
+        v = re.sub(r"[ \t]+", " ", v)
+        # Limit consecutive blank lines to 2 (preserve code block formatting)
+        v = re.sub(r"\n{4,}", "\n\n\n", v)
+        # Strip leading/trailing whitespace from each line
+        lines = [line.strip() for line in v.split("\n")]
+        return "\n".join(lines).strip()
 
     @field_validator("cost_usd")
     @classmethod

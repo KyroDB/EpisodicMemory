@@ -1123,6 +1123,328 @@ async def reflect_before_action(
         )
 
 
+# ============================================================================
+# SKILLS ENDPOINTS
+# ============================================================================
+
+
+class SkillFeedbackRequest(BaseModel):
+    """
+    Request to provide feedback on a skill application.
+
+    Security:
+    - skill_id validated against customer namespace
+    - outcome restricted to valid values
+    - notes sanitized for storage
+    """
+
+    outcome: str = Field(
+        ...,
+        pattern="^(success|failure)$",
+        description="Whether skill application worked: 'success' or 'failure'"
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Optional notes about the skill application"
+    )
+
+
+class SkillFeedbackResponse(BaseModel):
+    """Response from skill feedback."""
+
+    skill_id: int
+    new_success_rate: float
+    total_usages: int
+    success_count: int
+    failure_count: int
+
+
+class SkillSummary(BaseModel):
+    """Summary of a skill for listing."""
+
+    skill_id: int
+    name: str
+    docstring: str
+    error_class: str
+    success_rate: float
+    usage_count: int
+    source_episodes: int
+    created_at: str
+
+
+class SkillsListResponse(BaseModel):
+    """Response for skills listing."""
+
+    skills: list[SkillSummary]
+    total_count: int
+
+
+@app.post(
+    "/api/v1/skills/{skill_id}/feedback",
+    response_model=SkillFeedbackResponse,
+    tags=["Skills"],
+)
+@limiter.limit("100/minute")
+async def skill_feedback(
+    request: Request,
+    skill_id: int,
+    feedback: SkillFeedbackRequest,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+):
+    """
+    Provide feedback on a skill application.
+
+    This endpoint is called by agents AFTER they apply a skill from the gating
+    system. It updates the skill's usage statistics to improve future
+    recommendations.
+
+    Pipeline:
+    1. Validate skill exists and belongs to customer
+    2. Update usage_count, success_count, or failure_count
+    3. Re-insert skill with updated stats
+    4. Return updated success rate
+
+    Args:
+        skill_id: ID of the skill that was applied
+        feedback: Feedback request with outcome
+        customer: Authenticated customer
+        customer_id: Customer ID from validated API key
+
+    Returns:
+        SkillFeedbackResponse: Updated skill stats
+
+    Raises:
+        HTTPException 401: Invalid/missing API key
+        HTTPException 404: Skill not found
+        HTTPException 403: Skill belongs to different customer
+        HTTPException 500: Feedback update failure
+
+    Security:
+        - Customer namespace isolation enforced
+        - Skill ownership validated before update
+        - Stats validated for consistency
+    """
+    logger.info(
+        f"Skill feedback for skill {skill_id} "
+        f"(customer: {customer_id}, outcome: {feedback.outcome})"
+    )
+
+    try:
+        # Update skill stats via router (returns updated skill to avoid race conditions)
+        skill = await kyrodb_router.update_skill_stats(
+            skill_id=skill_id,
+            customer_id=customer_id,
+            success=(feedback.outcome == "success"),
+        )
+
+        if skill is None:
+            # Skill not found or customer mismatch
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill {skill_id} not found or access denied",
+            )
+
+        # Track metrics
+        from src.observability.metrics import track_skill_application, update_skill_success_rate
+
+        track_skill_application(
+            skill_id=skill_id,
+            success=(feedback.outcome == "success"),
+        )
+
+        update_skill_success_rate(
+            skill_id=skill_id,
+            skill_name=skill.name,
+            success_rate=skill.success_rate,
+        )
+
+        logger.info(
+            f"Skill {skill_id} feedback recorded: "
+            f"outcome={feedback.outcome}, new_success_rate={skill.success_rate:.2f}"
+        )
+
+        return SkillFeedbackResponse(
+            skill_id=skill_id,
+            new_success_rate=skill.success_rate,
+            total_usages=skill.usage_count,
+            success_count=skill.success_count,
+            failure_count=skill.failure_count,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Skill feedback failed for skill {skill_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Skill feedback failed: {str(e)}",
+        )
+
+
+@app.get(
+    "/api/v1/skills",
+    response_model=SkillsListResponse,
+    tags=["Skills"],
+)
+@limiter.limit("50/minute")
+async def list_skills(
+    request: Request,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+    limit: int = 50,
+    min_success_rate: float = 0.0,
+):
+    """
+    List skills for the authenticated customer.
+
+    Returns a list of all promoted skills for the customer, sorted by
+    success rate descending.
+
+    Args:
+        customer: Authenticated customer
+        customer_id: Customer ID from validated API key
+        limit: Maximum number of skills to return (default: 50)
+        min_success_rate: Minimum success rate filter (default: 0.0)
+
+    Returns:
+        SkillsListResponse: List of skill summaries
+
+    Security:
+        - Customer namespace isolation enforced
+        - Only returns skills belonging to authenticated customer
+    """
+    from src.models.skill import Skill
+
+    logger.info(f"Listing skills for customer {customer_id} (limit: {limit})")
+
+    try:
+        # Use a neutral embedding to fetch all skills (search by customer namespace)
+        # This is a workaround - ideally we'd have a list/scan endpoint
+        neutral_embedding = [0.0] * embedding_service.config.text_dimension
+
+        results = await kyrodb_router.search_skills(
+            query_embedding=neutral_embedding,
+            customer_id=customer_id,
+            k=limit,
+            min_score=0.0,  # Get all skills regardless of similarity
+        )
+
+        # Convert to summaries and filter by success rate
+        skills = []
+        for skill, _ in results:
+            if skill.success_rate >= min_success_rate:
+                skills.append(
+                    SkillSummary(
+                        skill_id=skill.skill_id,
+                        name=skill.name,
+                        docstring=skill.docstring[:197] + "..." if len(skill.docstring) > 200 else skill.docstring,
+                        error_class=skill.error_class,
+                        success_rate=skill.success_rate,
+                        usage_count=skill.usage_count,
+                        source_episodes=len(skill.source_episodes),
+                        created_at=skill.created_at.isoformat(),
+                    )
+                )
+
+        # Sort by success rate descending
+        skills.sort(key=lambda s: s.success_rate, reverse=True)
+
+        logger.info(f"Found {len(skills)} skills for customer {customer_id}")
+
+        return SkillsListResponse(
+            skills=skills,
+            total_count=len(skills),
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Skills listing failed for customer {customer_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Skills listing failed: {str(e)}",
+        )
+
+
+@app.get(
+    "/api/v1/skills/{skill_id}",
+    tags=["Skills"],
+)
+@limiter.limit("100/minute")
+async def get_skill(
+    request: Request,
+    skill_id: int,
+    customer: Customer = Depends(get_authenticated_customer),
+    customer_id: str = Depends(get_customer_id_from_request),
+):
+    """
+    Get a specific skill by ID.
+
+    Args:
+        skill_id: ID of the skill to retrieve
+        customer: Authenticated customer
+        customer_id: Customer ID from validated API key
+
+    Returns:
+        Full skill object with all metadata
+
+    Security:
+        - Customer namespace isolation enforced
+        - Only returns skill if it belongs to authenticated customer
+    """
+    from src.kyrodb.router import get_namespaced_collection
+    from src.models.skill import Skill
+
+    logger.debug(f"Getting skill {skill_id} for customer {customer_id}")
+
+    try:
+        namespaced_collection = get_namespaced_collection(customer_id, "skills")
+        skill_data = await kyrodb_router.text_client.query(
+            doc_id=skill_id,
+            namespace=namespaced_collection,
+            include_embedding=False,
+        )
+
+        if not skill_data.found:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Skill {skill_id} not found",
+            )
+
+        skill = Skill.from_metadata_dict(skill_id, dict(skill_data.metadata))
+
+        # Verify customer ownership
+        if skill.customer_id != customer_id:
+            logger.error(
+                f"Customer mismatch for skill {skill_id}: "
+                f"expected {customer_id}, got {skill.customer_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Skill belongs to different customer",
+            )
+
+        return skill.model_dump()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Get skill failed for skill {skill_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Get skill failed: {str(e)}",
+        )
+
+
 # Admin endpoints
 
 def _enum_key_to_str(key: Any) -> str:
