@@ -254,9 +254,10 @@ class TestKyroDBRouterReal:
             
             assert text_success, "Text embedding insert failed"
             
-            # Query back (note: get_episode doesn't take customer_id)
+            # Query back with customer_id for namespace isolation
             result = await kyrodb_router.get_episode(
                 episode_id=episode_id,
+                customer_id=customer_id,
                 collection=collection,
             )
             
@@ -269,6 +270,7 @@ class TestKyroDBRouterReal:
             # Cleanup - always runs even if assertions fail
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
+                customer_id=customer_id,
                 collection=collection,
             )
             print("Episode cleaned up")
@@ -307,13 +309,15 @@ class TestKyroDBRouterReal:
         print(f"Inserted {len(episode_ids)} episodes")
         
         try:
-            # Search - note the API doesn't use customer_id as parameter
+            # Search - now uses customer_id for namespace isolation
             query_embedding = [0.1] * 384
             
             response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
+                customer_id=customer_id,
                 collection=collection,
                 k=10,
+                min_score=-1.0,  # Allow all scores for testing
             )
             
             print(f"\n--- Search Results ---")
@@ -329,6 +333,7 @@ class TestKyroDBRouterReal:
             for episode_id in episode_ids:
                 await kyrodb_router.delete_episode(
                     episode_id=episode_id,
+                    customer_id=customer_id,
                     collection=collection,
                 )
             print(f"Cleaned up {len(episode_ids)} episodes")
@@ -395,9 +400,10 @@ class TestReflectionPersistence:
             print(f"Update success: {success}")
             assert success, "Reflection update failed"
             
-            # Query and verify reflection metadata (note: get_episode doesn't take customer_id)
+            # Query and verify reflection metadata with customer_id
             result = await kyrodb_router.get_episode(
                 episode_id=episode_id,
+                customer_id=customer_id,
                 collection=collection,
             )
             
@@ -416,6 +422,7 @@ class TestReflectionPersistence:
             # Cleanup
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
+                customer_id=customer_id,
                 collection=collection,
             )
             print("\nEpisode cleaned up")

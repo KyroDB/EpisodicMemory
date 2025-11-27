@@ -246,6 +246,7 @@ class KyroDBRouter:
     async def search_episodes(
         self,
         query_embedding: list[float],
+        customer_id: str,
         collection: str,
         k: int = 20,
         min_score: float = 0.6,
@@ -256,9 +257,14 @@ class KyroDBRouter:
         """
         Search for episodes using text (and optionally image) embeddings.
 
+        Security:
+        - Customer namespace isolation enforced
+        - Only searches within customer's episodes
+
         Args:
             query_embedding: Text query embedding
-            collection: Namespace to search ("failures", "skills", "rules")
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures", "skills", "rules")
             k: Number of results to return
             min_score: Minimum similarity threshold
             metadata_filters: Optional metadata filters
@@ -269,13 +275,17 @@ class KyroDBRouter:
             SearchResponse: Combined search results from text (and optionally images)
 
         Raises:
+            ValueError: If customer_id is empty
             KyroDBError: If search fails
         """
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
         # Primary search: text embeddings
         text_response = await self.text_client.search(
             query_embedding=query_embedding,
             k=k,
-            namespace=collection,
+            namespace=namespaced_collection,
             min_score=min_score,
             include_embeddings=False,  # Don't waste bandwidth
             metadata_filters=metadata_filters,
@@ -289,25 +299,36 @@ class KyroDBRouter:
         return text_response
 
     async def delete_episode(
-        self, episode_id: int, collection: str, delete_images: bool = True
+        self, episode_id: int, customer_id: str, collection: str, delete_images: bool = True
     ) -> tuple[bool, bool]:
         """
         Delete episode from KyroDB instances.
 
+        Security:
+        - Customer namespace isolation enforced
+        - Only deletes from customer's collection
+
         Args:
             episode_id: Episode ID to delete
-            collection: Namespace
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
             delete_images: Also delete from image instance
 
         Returns:
             tuple: (text_deleted, image_deleted)
+
+        Raises:
+            ValueError: If customer_id is empty
         """
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
         text_deleted = False
         image_deleted = False
 
         # Delete from text instance
         try:
-            response = await self.text_client.delete(doc_id=episode_id, namespace=collection)
+            response = await self.text_client.delete(doc_id=episode_id, namespace=namespaced_collection)
             text_deleted = response.success
         except Exception as e:
             logger.error(f"Text deletion failed for episode {episode_id}: {e}")
@@ -316,7 +337,7 @@ class KyroDBRouter:
         if delete_images:
             try:
                 response = await self.image_client.delete(
-                    doc_id=episode_id, namespace=f"{collection}_images"
+                    doc_id=episode_id, namespace=f"{namespaced_collection}_images"
                 )
                 image_deleted = response.success
             except Exception as e:
@@ -497,26 +518,35 @@ class KyroDBRouter:
         return (text_deleted, image_deleted)
 
     async def get_episode(
-        self, episode_id: int, collection: str, include_image: bool = False
+        self, episode_id: int, customer_id: str, collection: str, include_image: bool = False
     ) -> Optional[dict]:
         """
         Retrieve episode by ID.
 
+        Security:
+        - Customer namespace isolation enforced
+        - Only retrieves from customer's collection
+
         Args:
             episode_id: Episode ID to retrieve
-            collection: Namespace
+            customer_id: Customer ID for namespace isolation
+            collection: Base collection name ("failures")
             include_image: Also fetch image embedding
 
         Returns:
             dict with episode data, or None if not found
 
         Raises:
+            ValueError: If customer_id is empty
             KyroDBError: On retrieval failure
         """
+        # Generate customer-namespaced collection
+        namespaced_collection = get_namespaced_collection(customer_id, collection)
+
         # Fetch from text instance
         try:
             response = await self.text_client.query(
-                doc_id=episode_id, namespace=collection, include_embedding=False
+                doc_id=episode_id, namespace=namespaced_collection, include_embedding=False
             )
             if not response.found:
                 return None
@@ -532,7 +562,7 @@ class KyroDBRouter:
                 try:
                     image_response = await self.image_client.query(
                         doc_id=episode_id,
-                        namespace=f"{collection}_images",
+                        namespace=f"{namespaced_collection}_images",
                         include_embedding=False,
                     )
                     episode_data["image_found"] = image_response.found

@@ -653,17 +653,19 @@ class TestDailyCostTracking:
     async def test_daily_cost_resets_at_midnight(self, llm_config: LLMConfig):
         """Test that daily cost resets at midnight UTC."""
         from src.ingestion.tiered_reflection import TieredReflectionService
-        from datetime import date, timedelta
+        from datetime import datetime, timezone, timedelta
         from unittest.mock import patch
 
         with patch.object(TieredReflectionService, "__init__", return_value=None):
             service = TieredReflectionService.__new__(TieredReflectionService)
 
-            # Initialize with yesterday's date
+            # Initialize with yesterday's date (UTC to match the implementation)
             import threading
             service._stats_lock = threading.Lock()
             service._daily_cost_usd = 100.0  # Over limit
-            service._daily_cost_date = date.today() - timedelta(days=1)  # Yesterday
+            # Use UTC date to match implementation's datetime.now(timezone.utc).date()
+            today_utc = datetime.now(timezone.utc).date()
+            service._daily_cost_date = today_utc - timedelta(days=1)  # Yesterday UTC
             service._daily_warning_logged = True
             service._daily_limit_logged = True
             service.DAILY_COST_LIMIT_USD = 50.0

@@ -138,7 +138,8 @@ class TestGatingThresholds:
             
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=5,
                 min_score=0.5,
             )
@@ -170,7 +171,8 @@ class TestGatingThresholds:
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
             )
             print(f"\n  Cleaned up episode {episode_id}")
 
@@ -238,7 +240,8 @@ class TestGatingThresholds:
             
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=5,
                 min_score=0.5,
             )
@@ -261,7 +264,8 @@ class TestGatingThresholds:
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
             )
             print(f"\n  Cleaned up episode {episode_id}")
 
@@ -284,7 +288,8 @@ class TestGatingThresholds:
         
         search_response = await kyrodb_router.search_episodes(
             query_embedding=query_embedding,
-            collection=f"{customer_id}:{collection}",
+            customer_id=customer_id,
+            collection=collection,
             k=5,
             min_score=0.7,  # High threshold
         )
@@ -365,7 +370,8 @@ class TestGatingThresholds:
             
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=5,
                 min_score=0.5,
             )
@@ -387,7 +393,8 @@ class TestGatingThresholds:
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
             )
             print(f"\n  Cleaned up episode {episode_id}")
 

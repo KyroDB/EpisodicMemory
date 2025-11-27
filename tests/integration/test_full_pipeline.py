@@ -154,7 +154,8 @@ class TestFullPipelineWithRealKyroDB:
             
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
-                collection=f"{customer_id}:{collection}",  # Use namespaced collection
+                customer_id=customer_id,
+                collection=collection,
                 k=10,
                 min_score=0.5,
             )
@@ -174,17 +175,16 @@ class TestFullPipelineWithRealKyroDB:
             # Step 4: Retrieve full episode and verify reflection
             print("\n--- Step 4: Retrieve Full Episode ---")
             
-            # Get episode uses collection directly (not namespaced in get_episode)
-            # Need to use the raw client for this
-            retrieved = await kyrodb_router.text_client.query(
-                doc_id=episode_id,
-                namespace=f"{customer_id}:{collection}",
-                include_embedding=False,
+            # Get episode with customer_id for namespace isolation
+            retrieved_dict = await kyrodb_router.get_episode(
+                episode_id=episode_id,
+                customer_id=customer_id,
+                collection=collection,
             )
             
-            assert retrieved.found, "Episode not found after search"
+            assert retrieved_dict is not None and retrieved_dict.get("found"), "Episode not found after search"
             
-            metadata = dict(retrieved.metadata)
+            metadata = retrieved_dict.get("metadata", {})
             print(f"  Retrieved episode with {len(metadata)} metadata fields")
             
             # Verify reflection fields
@@ -204,7 +204,8 @@ class TestFullPipelineWithRealKyroDB:
             
             precondition_results = await kyrodb_router.search_episodes(
                 query_embedding=precondition_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=5,
                 min_score=0.7,
             )
@@ -230,7 +231,8 @@ class TestFullPipelineWithRealKyroDB:
             print("\n--- Cleanup ---")
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
             )
             print(f"  Episode {episode_id} deleted")
 
@@ -285,7 +287,8 @@ class TestFullPipelineWithRealKyroDB:
                 start = time.perf_counter()
                 response = await kyrodb_router.search_episodes(
                     query_embedding=query_embedding,
-                    collection=f"{customer_id}:{collection}",
+                    customer_id=customer_id,
+                    collection=collection,
                     k=10,
                     min_score=0.5,
                 )
@@ -325,7 +328,8 @@ class TestFullPipelineWithRealKyroDB:
                 try:
                     await kyrodb_router.delete_episode(
                         episode_id=episode_id,
-                        collection=f"{customer_id}:{collection}",
+                        customer_id=customer_id,
+                        collection=collection,
                     )
                     deleted += 1
                 except Exception:
@@ -392,7 +396,8 @@ class TestFullPipelineWithRealKyroDB:
             # Search and verify reflection fields in results
             search_response = await kyrodb_router.search_episodes(
                 query_embedding=embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=5,
             )
             
@@ -420,7 +425,8 @@ class TestFullPipelineWithRealKyroDB:
         finally:
             await kyrodb_router.delete_episode(
                 episode_id=episode_id,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
             )
             print(f"\n  Cleaned up episode {episode_id}")
 
@@ -487,7 +493,8 @@ class TestPreconditionMatching:
             
             results = await kyrodb_router.search_episodes(
                 query_embedding=query_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=3,
             )
             
@@ -516,7 +523,8 @@ class TestPreconditionMatching:
             
             db_results = await kyrodb_router.search_episodes(
                 query_embedding=db_embedding,
-                collection=f"{customer_id}:{collection}",
+                customer_id=customer_id,
+                collection=collection,
                 k=3,
             )
             
@@ -532,6 +540,7 @@ class TestPreconditionMatching:
             for episode_id in episode_ids:
                 await kyrodb_router.delete_episode(
                     episode_id=episode_id,
-                    collection=f"{customer_id}:{collection}",
+                    customer_id=customer_id,
+                    collection=collection,
                 )
             print(f"  Deleted {len(episode_ids)} episodes")
