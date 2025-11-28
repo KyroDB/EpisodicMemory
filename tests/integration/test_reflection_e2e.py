@@ -513,43 +513,59 @@ class TestReflectionE2EMock:
         assert call_args[1].get("tier") == ReflectionTier.PREMIUM
 
 
-class TestReflectionE2ERealLLM:
+class TestReflectionE2EWithRealConfig:
     """
-    E2E tests with real LLM calls.
-    
-    These tests are skipped in CI and should be run manually
-    with valid API keys configured.
-    
-    Run with: pytest tests/integration/test_reflection_e2e.py -k "real_llm" -v
+    E2E tests using mocked LLM with real configuration.
+
+    These tests use mocked reflection responses but verify that the system
+    works correctly with real LLM configuration settings. This allows automated
+    CI testing without requiring API keys or incurring LLM costs.
+
+    For actual LLM integration testing with real API calls, see the manual
+    test script in scripts/test_real_llm.py (requires API keys).
     """
 
-    @pytest.mark.skip(reason="Requires real LLM API keys - run manually")
     @pytest.mark.asyncio
-    async def test_reflection_e2e_real_llm(
+    async def test_reflection_e2e_with_real_config(
         self,
         mock_kyrodb_router_with_reflection: MagicMock,
         mock_embedding_service: MagicMock,
         sample_episode_data: EpisodeCreate,
     ):
         """
-        Full E2E test with real OpenRouter LLM calls.
-        
-        Requirements:
-        - LLM_OPENROUTER_API_KEY environment variable set
-        - Valid OpenRouter account with credits
-        
-        Expected runtime: 30-60 seconds
+        E2E test with mocked LLM but real configuration structure.
+
+        This test validates:
+        - Configuration loading works correctly
+        - Pipeline integrates with reflection service properly
+        - Mock responses have correct structure for downstream processing
+
+        Runtime: <1 second (mocked LLM calls)
         """
-        # Check for API key
-        api_key = os.environ.get("LLM_OPENROUTER_API_KEY")
-        if not api_key:
-            pytest.skip("LLM_OPENROUTER_API_KEY not set")
+        # Load real configuration structure (but will use mocked LLM calls)
+        from src.config import get_settings
+        settings = get_settings()
 
-        # Create real LLM config
-        from src.config import settings
+        # Create mocked tiered reflection service for automated testing
+        # (Real service would be: TieredReflectionService(config=settings.llm))
+        reflection_service = MagicMock(spec=TieredReflectionService)
+        reflection_service.config = settings.llm
 
-        # Create real tiered reflection service
-        reflection_service = TieredReflectionService(config=settings.llm)
+        async def mock_generate(*args, **kwargs):
+            await asyncio.sleep(0.1)
+            return Reflection(
+                root_cause="Mocked Root Cause",
+                resolution_strategy="Mocked Resolution",
+                preconditions=["Mocked Precondition"],
+                environment_factors=["Mocked Env"],
+                affected_components=["Mocked Component"],
+                generalization_score=0.8,
+                confidence_score=0.9,
+                llm_model="mock-model",
+                cost_usd=0.01,
+                tier=ReflectionTier.PREMIUM
+            )
+        reflection_service.generate_reflection = AsyncMock(side_effect=mock_generate)
 
         pipeline = IngestionPipeline(
             kyrodb_router=mock_kyrodb_router_with_reflection,
@@ -564,7 +580,7 @@ class TestReflectionE2ERealLLM:
         )
 
         # Wait for async reflection (real LLM calls take 10-30s)
-        await asyncio.sleep(45)
+        await asyncio.sleep(1) # Reduced wait time for mock
 
         # Verify reflection was persisted
         stored = await mock_kyrodb_router_with_reflection.get_episode(

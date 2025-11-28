@@ -391,9 +391,9 @@ class TestSkillsInGating:
     """Test skills integration with gating service."""
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires full embedding service setup - covered by test_gating_integration.py")
     async def test_gating_uses_skills_for_hints(self, kyrodb_router: KyroDBRouter):
         """Test that gating service uses skills to provide hints."""
+        from unittest.mock import MagicMock
         from src.gating.service import GatingService
         from src.retrieval.search import SearchPipeline
         
@@ -415,8 +415,15 @@ class TestSkillsInGating:
         try:
             await kyrodb_router.insert_skill(skill=skill, embedding=skill_embedding)
             
+            # Mock embedding service
+            mock_embedding_service = MagicMock()
+            mock_embedding_service.embed_text.return_value = skill_embedding
+
             # Create search pipeline and gating service
-            search_pipeline = SearchPipeline(kyrodb_router=kyrodb_router)
+            search_pipeline = SearchPipeline(
+                kyrodb_router=kyrodb_router,
+                embedding_service=mock_embedding_service
+            )
             gating_service = GatingService(
                 search_pipeline=search_pipeline,
                 kyrodb_router=kyrodb_router,
@@ -428,6 +435,8 @@ class TestSkillsInGating:
             request = ReflectRequest(
                 goal="Process user form data",
                 proposed_action="Write a function to process user input from form",
+                tool="python",
+                current_state={}
             )
             
             # Query about input validation
@@ -438,16 +447,23 @@ class TestSkillsInGating:
             
             # Should get a valid response
             assert response is not None, "Should return a response"
-            assert response.action is not None, "Should have an action"
-            assert response.action.recommendation in ["PROCEED", "HINT", "REWRITE", "BLOCK"]
+            # We expect at least a HINT or PROCEED, but since we have a matching skill, 
+            # it might even suggest REWRITE if confidence is high enough.
+            from src.models.gating import ActionRecommendation
+            assert response.recommendation in [
+                ActionRecommendation.PROCEED, 
+                ActionRecommendation.HINT, 
+                ActionRecommendation.REWRITE, 
+                ActionRecommendation.BLOCK
+            ]
             
             # Print for debugging
-            print(f"\nGating recommendation: {response.action.recommendation}")
-            print(f"Confidence: {response.action.confidence}")
-            if response.action.matched_skills:
-                print(f"Matched skills: {len(response.action.matched_skills)}")
-                for s in response.action.matched_skills:
-                    print(f"  - {s.name}")
+            print(f"\nGating recommendation: {response.recommendation}")
+            print(f"Confidence: {response.confidence}")
+            if response.relevant_skills:
+                print(f"Matched skills: {len(response.relevant_skills)}")
+                for s in response.relevant_skills:
+                    print(f"  - {s.get('name')}")
         finally:
             namespace = f"{customer_id}:skills"
             try:

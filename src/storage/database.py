@@ -1,5 +1,5 @@
 """
-Customer and API key storage using SQLite (bootstrap) → PostgreSQL (production).
+Customer and API key storage using SQLite .
 
 Security features:
 - API keys hashed with bcrypt (cost factor 12)

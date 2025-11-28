@@ -52,7 +52,7 @@ data/
 *.sqlite
 *.sqlite3
 *.csv
-*.json
+
 *.parquet
 *.feather
 *.pkl

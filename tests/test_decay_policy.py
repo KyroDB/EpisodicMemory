@@ -75,7 +75,7 @@ class TestMemoryDecayPolicy:
                 error_class=error_class,
                 tool_chain=["test_tool"],
                 actions_taken=["test_action"],
-                metadata=metadata or {},
+                environment_info=metadata or {},
                 tags=tags or []
             ),
             reflection=None,
@@ -102,7 +102,6 @@ class TestMemoryDecayPolicy:
         
         assert decay_policy._is_permanent(episode) is True
     
-    @pytest.mark.skip(reason="Episode model lacks metadata field - decay policy needs update to use environment_info")
     def test_is_permanent_manual_flag(self, decay_policy):
         """Test permanent protection via manual flag."""
         now = datetime.now(timezone.utc)
@@ -230,7 +229,6 @@ class TestMemoryDecayPolicy:
         assert stats["deleted"] == 0
         assert stats["protected"] == 1
     
-    @pytest.mark.skip(reason="Test incorrectly checks _archive_episode.called on non-mock method")
     @pytest.mark.asyncio
     async def test_apply_decay_policy_dry_run(self, decay_policy, mock_kyrodb_router):
         """Test dry-run mode."""
@@ -243,6 +241,7 @@ class TestMemoryDecayPolicy:
         )
         
         decay_policy._fetch_all_episodes = AsyncMock(return_value=[old_episode])
+        decay_policy._archive_episode = AsyncMock()
         
         stats = await decay_policy.apply_decay_policy("test_customer", dry_run=True)
         

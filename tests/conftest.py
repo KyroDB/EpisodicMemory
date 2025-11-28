@@ -8,6 +8,7 @@ Provides shared fixtures for:
 - FastAPI test client
 """
 
+import asyncio
 from datetime import timezone, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -36,6 +37,27 @@ from src.models.episode import (
 from src.ingestion.capture import IngestionPipeline
 from src.retrieval.search import SearchPipeline
 from src.gating.service import GatingService
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Cleanup hook called after all tests complete.
+
+    Force exits pytest to work around asyncio event loop cleanup hang.
+    This is a known issue with pytest-asyncio on Python 3.9.
+
+    See: https://github.com/pytest-dev/pytest-asyncio/issues/371
+    """
+    import os
+    import sys
+
+    # Flush output to ensure all test results are printed
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Force exit with the test exit code
+    # This bypasses the hanging asyncio cleanup in threading module
+    os._exit(exitstatus)
 
 
 @pytest.fixture
@@ -264,6 +286,9 @@ def app_client(
     test_settings: Settings,
     mock_kyrodb_router: KyroDBRouter,
     mock_embedding_service: EmbeddingService,
+    ingestion_pipeline: IngestionPipeline,
+    search_pipeline: SearchPipeline,
+    gating_service: GatingService,
 ):
     """Create FastAPI test client with mocked dependencies."""
     # Patch global instances
@@ -271,10 +296,22 @@ def app_client(
     from src.main import app
     from src.auth.dependencies import get_authenticated_customer
     from src.models.customer import Customer, SubscriptionTier, CustomerStatus
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI
 
     main_module.kyrodb_router = mock_kyrodb_router
     main_module.embedding_service = mock_embedding_service
     main_module.reflection_service = None  # Skip LLM for tests
+    main_module.ingestion_pipeline = ingestion_pipeline
+    main_module.search_pipeline = search_pipeline
+    main_module.gating_service = gating_service
+
+    # Mock lifespan to prevent overwriting mocks
+    @asynccontextmanager
+    async def mock_lifespan(app: FastAPI):
+        yield
+
+    app.router.lifespan_context = mock_lifespan
 
     # Override authentication dependency
     async def mock_get_authenticated_customer(request: Request):
@@ -292,26 +329,30 @@ def app_client(
 
     app.dependency_overrides[get_authenticated_customer] = mock_get_authenticated_customer
 
-    # Create test client (skip lifespan to avoid actual connections)
-    client = TestClient(app)
-
-    yield client
-
-    # Clean up overrides
-    app.dependency_overrides.clear()
+    # Create test client
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        # Clean up overrides
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture
-def ingestion_pipeline(
+async def ingestion_pipeline(
     mock_kyrodb_router: KyroDBRouter,
     mock_embedding_service: EmbeddingService,
 ) -> IngestionPipeline:
     """Create ingestion pipeline with mock dependencies."""
-    return IngestionPipeline(
+    pipeline = IngestionPipeline(
         kyrodb_router=mock_kyrodb_router,
         embedding_service=mock_embedding_service,
         reflection_service=None,  # Skip LLM for integration tests
     )
+    try:
+        yield pipeline
+    finally:
+        await pipeline.shutdown(timeout=5.0)
 
 
 @pytest.fixture

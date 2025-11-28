@@ -192,10 +192,21 @@ class MemoryDecayPolicy:
         Returns:
             True if episode should never be deleted/archived
         """
-        # Check 1: Permanent flag in metadata (support multiple formats)
+        # Check 1: Permanent flag (check both new and legacy locations for migration compatibility)
+        if hasattr(episode, 'create_data') and episode.create_data:
+            if hasattr(episode.create_data, 'environment_info') and episode.create_data.environment_info:
+                # Accept boolean or string representations
+                if episode.create_data.environment_info.get("permanent") in (True, "true", "True", "1"):
+                    return True
+
+        # MIGRATION FALLBACK: Check legacy metadata location for permanent flag
+        # This ensures episodes marked permanent before migration are still protected
         if hasattr(episode, 'metadata') and episode.metadata:
-            # Accept boolean or string representations
             if episode.metadata.get("permanent") in (True, "true", "True", "1"):
+                logger.info(
+                    f"Episode {episode.episode_id} has permanent flag in legacy metadata location "
+                    f"- consider migrating to environment_info"
+                )
                 return True
         
         # Check 2: Critical error class (defensive nested access)

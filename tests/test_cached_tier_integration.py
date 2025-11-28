@@ -25,7 +25,6 @@ from src.config import LLMConfig
 # Plan: Implement clustering infrastructure in Phase 6, then re-enable these tests
 # Timeline: Target Phase 6 (after Phase 5 premium tier stabilization)
 # See: docs/STORAGE_ARCHITECTURE.md for cached tier design
-@pytest.mark.skip(reason="Phase 6 cached tier depends on clustering/template architecture not yet implemented - see TODO above")
 @pytest.mark.asyncio
 class TestCachedTierIntegration:
     """Integration tests for cached reflection tier."""
@@ -58,11 +57,22 @@ class TestCachedTierIntegration:
     @pytest.fixture
     def tiered_service(self, llm_config, mock_kyrodb_router, mock_embedding_service):
         """Create tiered reflection service with clustering."""
-        return TieredReflectionService(
-            config=llm_config,
-            kyrodb_router=mock_kyrodb_router,
-            embedding_service=mock_embedding_service
-        )
+        # Mock settings to include clustering config
+        mock_clustering_config = MagicMock()
+        mock_clustering_config.min_samples = 3
+        mock_clustering_config.min_cluster_size = 5  # Required by EpisodeClusterer
+        mock_clustering_config.eps = 0.3
+        mock_clustering_config.metric = 'cosine'
+
+        with patch('src.config.settings', create=True) as mock_settings:
+            mock_settings.clustering = mock_clustering_config
+
+            service = TieredReflectionService(
+                config=llm_config,
+                kyrodb_router=mock_kyrodb_router,
+                embedding_service=mock_embedding_service
+            )
+            yield service
     
     def create_test_episode(self, error_msg: str = "Connection timeout") -> EpisodeCreate:
         """Helper to create test episode."""
@@ -71,7 +81,9 @@ class TestCachedTierIntegration:
             error_trace=f"Error: {error_msg}\\nStack trace here",
             error_class=ErrorClass.NETWORK_ERROR,
             context={"env": "production"},
-            tags=["deployment"]
+            tags=["deployment"],
+            tool_chain=["kubectl", "helm"],
+            actions_taken=["kubectl apply -f deployment.yaml", "helm upgrade my-app"]
         )
     
     async def test_cached_tier_not_selected_without_clustering(self, tiered_service):
@@ -114,8 +126,8 @@ class TestCachedTierIntegration:
         
         # Should select CACHED tier
         assert tier == ReflectionTier.CACHED
-        assert hasattr(tiered_service, '_cached_cluster_template')
-        assert tiered_service._cached_cluster_template == mock_template
+        assert hasattr(tiered_service._cached_template_local, 'cluster_template')
+        assert tiered_service._cached_template_local.cluster_template == mock_template
     
     async def test_cached_reflection_generation(self, tiered_service):
         """Test generating reflection from cached template."""
@@ -147,11 +159,11 @@ class TestCachedTierIntegration:
             generated_at=datetime.now(timezone.utc),
             cost_usd=0.0,  # Cached = $0
             generation_latency_ms=5.0,
-            tier="CACHED"
+            tier="cached"
         )
         
         tiered_service.template_generator.get_cached_reflection = AsyncMock(return_value=mock_reflection)
-        tiered_service._cached_cluster_template = mock_template
+        tiered_service._cached_template_local.cluster_template = mock_template
         
         episode = self.create_test_episode()
         
@@ -160,7 +172,7 @@ class TestCachedTierIntegration:
             reflection = await tiered_service.generate_reflection(episode)
         
         assert reflection is not None
-        assert reflection.tier == "CACHED"
+        assert reflection.tier == "cached"
         assert reflection.cost_usd == 0.0
         assert reflection.confidence_score >= 0.6
     
@@ -179,11 +191,11 @@ class TestCachedTierIntegration:
             generated_at=datetime.now(timezone.utc),
             cost_usd=0.0,
             generation_latency_ms=5.0,
-            tier="CACHED"
+            tier="cached"
         )
         
         tiered_service.template_generator.get_cached_reflection = AsyncMock(return_value=low_quality_reflection)
-        tiered_service._cached_cluster_template = MagicMock()
+        tiered_service._cached_template_local.cluster_template = MagicMock()
         
         # Mock cheap service to return good reflection
         cheap_reflection = Reflection(
@@ -198,7 +210,7 @@ class TestCachedTierIntegration:
             generated_at=datetime.now(timezone.utc),
             cost_usd=0.0003,
             generation_latency_ms=500.0,
-            tier="CHEAP"
+            tier="cheap"
         )
         tiered_service.cheap_service.generate_reflection = AsyncMock(return_value=cheap_reflection)
         
@@ -209,7 +221,7 @@ class TestCachedTierIntegration:
             reflection = await tiered_service.generate_reflection(episode)
         
         # Should have fallen back to CHEAP
-        assert reflection.tier == "CHEAP"
+        assert reflection.tier == "cheap"
         assert reflection.cost_usd > 0.0
    
     async def test_cost_savings_with_cached_tier(self, tiered_service):
@@ -217,6 +229,23 @@ class TestCachedTierIntegration:
         # Track costs
         costs = []
         
+        # Mock premium service to return costly reflection
+        premium_reflection = Reflection(
+            root_cause="Complex error",
+            resolution_strategy="Complex resolution",
+            preconditions=["complex"],
+            confidence_score=0.95,
+            generalization_score=0.8,
+            environment_factors=["complex"],
+            affected_components=["complex"],
+            llm_model="gpt-4",
+            generated_at=datetime.now(timezone.utc),
+            cost_usd=0.096,
+            generation_latency_ms=1000.0,
+            tier="premium"
+        )
+        tiered_service.premium_service.generate_multi_perspective_reflection = AsyncMock(return_value=premium_reflection)
+
         # Generate 10 reflections (simulate cluster reuse)
         for i in range(10):
             episode = self.create_test_episode(f"Error {i}")
@@ -241,10 +270,10 @@ class TestCachedTierIntegration:
                     generated_at=datetime.now(timezone.utc),
                     cost_usd=0.0,
                     generation_latency_ms=5.0,
-                    tier="CACHED"
+                    tier="cached"
                 )
                 tiered_service.template_generator.get_cached_reflection = AsyncMock(return_value=cached_reflection)
-                tiered_service._cached_cluster_template = MagicMock()
+                tiered_service._cached_template_local.cluster_template = MagicMock()
             
             with patch.object(tiered_service, '_select_tier', return_value=tier):
                 reflection = await tiered_service.generate_reflection(episode)

@@ -442,6 +442,92 @@ class LoggingConfig(BaseSettings):
     )
 
 
+class HealthCheckConfig(BaseSettings):
+    """Health check configuration with degraded state thresholds."""
+
+    model_config = SettingsConfigDict(env_prefix="HEALTH_")
+
+    # KyroDB latency thresholds (for degraded state detection)
+    kyrodb_latency_warning_ms: float = Field(
+        default=100.0,
+        ge=0.0,
+        description="KyroDB latency threshold for warning (degraded state)"
+    )
+    kyrodb_latency_error_ms: float = Field(
+        default=500.0,
+        ge=0.0,
+        description="KyroDB latency threshold for error (unhealthy state)"
+    )
+
+    # Embedding service latency thresholds
+    embedding_latency_warning_ms: float = Field(
+        default=50.0,
+        ge=0.0,
+        description="Embedding latency threshold for warning"
+    )
+    embedding_latency_error_ms: float = Field(
+        default=200.0,
+        ge=0.0,
+        description="Embedding latency threshold for error"
+    )
+
+    @field_validator("kyrodb_latency_error_ms")
+    @classmethod
+    def validate_kyrodb_thresholds(cls, v: float, info) -> float:
+        """Ensure error threshold is greater than warning threshold."""
+        warning = info.data.get("kyrodb_latency_warning_ms")
+        if warning is not None and v <= warning:
+            raise ValueError(
+                f"kyrodb_latency_error_ms ({v}) must be > kyrodb_latency_warning_ms ({warning})"
+            )
+        return v
+
+    @field_validator("embedding_latency_error_ms")
+    @classmethod
+    def validate_embedding_thresholds(cls, v: float, info) -> float:
+        """Ensure error threshold is greater than warning threshold."""
+        warning = info.data.get("embedding_latency_warning_ms")
+        if warning is not None and v <= warning:
+            raise ValueError(
+                f"embedding_latency_error_ms ({v}) must be > embedding_latency_warning_ms ({warning})"
+            )
+        return v
+
+    # Cache settings
+    cache_ttl_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=60.0,
+        description="Health check result cache TTL in seconds"
+    )
+
+    # Probe timeout settings
+    liveness_timeout_ms: float = Field(
+        default=5000.0,
+        ge=100.0,
+        description="Maximum time for liveness probe"
+    )
+    readiness_timeout_ms: float = Field(
+        default=10000.0,
+        ge=100.0,
+        description="Maximum time for readiness probe"
+    )
+
+    # Circuit breaker settings
+    consecutive_failures_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Consecutive health check failures before marking unhealthy"
+    )
+    recovery_threshold: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Consecutive successes needed to recover from unhealthy"
+    )
+
+
 
 
 class ReflectionConfig(BaseSettings):
@@ -576,6 +662,7 @@ class Settings(BaseSettings):
     cors: CORSConfig = Field(default_factory=CORSConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     stripe: StripeConfig = Field(default_factory=StripeConfig)
+    health: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     
     # Admin authentication (optional but recommended for production)
     # Set ADMIN_API_KEY in environment to protect admin endpoints

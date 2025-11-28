@@ -29,6 +29,15 @@ from src.auth import (
     require_admin_access,
 )
 from src.config import get_settings
+from src.rate_limits import (
+    CAPTURE_RATE_LIMIT,
+    SEARCH_RATE_LIMIT,
+    REFLECT_RATE_LIMIT,
+    SKILLS_RATE_LIMIT,
+    ADMIN_RATE_LIMIT,
+    get_rate_limit_for_tier,
+    log_rate_limit_exceeded,
+)
 from src.ingestion.capture import IngestionPipeline
 from src.ingestion.embedding import EmbeddingService
 from src.ingestion.tiered_reflection import TieredReflectionService, get_tiered_reflection_service
@@ -127,24 +136,24 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing KyroDB router...")
         kyrodb_router = KyroDBRouter(config=settings.kyrodb)
         await kyrodb_router.connect()
-        logger.info("✓ KyroDB router connected")
+        logger.info("[OK] KyroDB router connected")
 
         # Initialize embedding service
         logger.info("Initializing embedding service...")
         embedding_service = EmbeddingService(config=settings.embedding)
-        logger.info("✓ Embedding service initialized")
+        logger.info("[OK] Embedding service initialized")
 
         # Warm up embedding models (prevents cold start on first request)
         logger.info("Warming up embedding models...")
         embedding_service.warmup()
-        logger.info("✓ Embedding models warmed up")
+        logger.info("[OK] Embedding models warmed up")
 
         # Initialize tiered reflection service (Phase 5)
         if settings.llm.has_any_api_key:
             logger.info("Initializing tiered LLM reflection service...")
             reflection_service = get_tiered_reflection_service(config=settings.llm)
             logger.info(
-                f"✓ Tiered reflection service initialized "
+                f"[OK] Tiered reflection service initialized "
                 f"(providers: {settings.llm.enabled_providers})"
             )
         else:
@@ -161,7 +170,7 @@ async def lifespan(app: FastAPI):
             embedding_service=embedding_service,
             reflection_service=reflection_service,
         )
-        logger.info("✓ Ingestion pipeline ready")
+        logger.info("[OK] Ingestion pipeline ready")
 
         # Initialize search pipeline
         logger.info("Initializing search pipeline...")
@@ -169,7 +178,7 @@ async def lifespan(app: FastAPI):
             kyrodb_router=kyrodb_router,
             embedding_service=embedding_service,
         )
-        logger.info("✓ Search pipeline ready")
+        logger.info("[OK] Search pipeline ready")
 
         # Initialize gating service (Phase 3)
         logger.info("Initializing gating service...")
@@ -177,7 +186,7 @@ async def lifespan(app: FastAPI):
             search_pipeline=search_pipeline,
             kyrodb_router=kyrodb_router,
         )
-        logger.info("✓ Gating service ready")
+        logger.info("[OK] Gating service ready")
 
         logger.info("=== Service Ready ===")
 
@@ -191,9 +200,14 @@ async def lifespan(app: FastAPI):
         # Shutdown
         logger.info("=== Shutting down ===")
 
+        # Wait for pending reflection tasks to complete
+        if ingestion_pipeline:
+            await ingestion_pipeline.shutdown(timeout=30.0)
+            logger.info("[OK] Pending reflections completed")
+
         if kyrodb_router:
             await kyrodb_router.close()
-            logger.info("✓ KyroDB connections closed")
+            logger.info("[OK] KyroDB connections closed")
 
         logger.info("=== Shutdown complete ===")
 
@@ -211,8 +225,52 @@ app = FastAPI(
 # Rate limiter state
 app.state.limiter = limiter
 
+
+# Custom rate limit exceeded handler with tier-aware logging
+async def custom_rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Handle rate limit exceeded with tier-aware logging and metrics."""
+    # Extract customer info for logging
+    customer_id = "unknown"
+    tier = None
+    
+    if hasattr(request.state, "customer"):
+        customer = request.state.customer
+        customer_id = customer.customer_id
+        tier = customer.subscription_tier
+        
+        # Log and track metrics
+        endpoint_type = _get_endpoint_type(request.url.path)
+        log_rate_limit_exceeded(
+            customer_id=customer_id,
+            tier=tier,
+            endpoint_type=endpoint_type,
+        )
+    else:
+        logger.warning(
+            f"Rate limit exceeded for unauthenticated request: {request.url.path}"
+        )
+    
+    # Use default handler for response
+    return await _rate_limit_exceeded_handler(request, exc)
+
+
+def _get_endpoint_type(path: str) -> str:
+    """Extract endpoint type from path for rate limit logging."""
+    if "/capture" in path:
+        return "capture"
+    elif "/search" in path:
+        return "search"
+    elif "/reflect" in path:
+        return "reflect"
+    elif "/skills" in path:
+        return "skills"
+    elif "/admin" in path:
+        return "admin"
+    return "default"
+
+
 # Rate limit exceeded handler
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
 
 # CORS middleware (configured via environment variables)
 # Production: Set CORS_ALLOWED_ORIGINS="https://app.example.com,https://api.example.com"
@@ -223,7 +281,7 @@ cors_origins = settings.cors.origins_list
 # Security warning if wildcard is used
 if "*" in cors_origins:
     logger.warning(
-        "⚠️  CORS allows ALL origins (*) - configure CORS_ALLOWED_ORIGINS for production!"
+        "[SECURITY] CORS allows ALL origins (*) - configure CORS_ALLOWED_ORIGINS for production!"
     )
 
 app.add_middleware(
@@ -581,7 +639,7 @@ class SuccessValidationResponse(BaseModel):
     status_code=status.HTTP_201_CREATED,
     tags=["Ingestion"],
 )
-@limiter.limit("100/minute")  # Conservative rate limit (will be tier-based in Phase 4)
+@limiter.limit(CAPTURE_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
 async def capture_episode(
     request: Request,  # Required by slowapi
     episode_data: EpisodeCreate,
@@ -732,7 +790,7 @@ async def capture_episode(
     response_model=SuccessValidationResponse,
     tags=["Validation"],
 )
-@limiter.limit("100/minute")
+@limiter.limit(CAPTURE_RATE_LIMIT)  # Same limits as capture (validation is part of ingestion flow)
 async def validate_fix(
     request: Request,
     validation: SuccessValidationRequest,
@@ -943,7 +1001,7 @@ async def validate_fix(
     response_model=SearchResponse,
     tags=["Retrieval"],
 )
-@limiter.limit("200/minute")  # Higher limit for search (will be tier-based in Phase 4)
+@limiter.limit(SEARCH_RATE_LIMIT)  # Tier-based: FREE=20/min, STARTER=200/min, PRO=1000/min, ENTERPRISE=5000/min
 async def search_episodes(
     request: Request,  # Required by slowapi
     search_request: SearchRequest,  # Renamed to avoid conflict with Request parameter
@@ -1068,7 +1126,7 @@ async def search_episodes(
     response_model=ReflectResponse,
     tags=["Reflection"],
 )
-@limiter.limit("100/minute")
+@limiter.limit(REFLECT_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=100/min, PRO=500/min, ENTERPRISE=2000/min
 async def reflect_before_action(
     request: Request,
     reflect_request: ReflectRequest,
@@ -1185,7 +1243,7 @@ class SkillsListResponse(BaseModel):
     response_model=SkillFeedbackResponse,
     tags=["Skills"],
 )
-@limiter.limit("100/minute")
+@limiter.limit(SKILLS_RATE_LIMIT)  # Tier-based: FREE=10/min, STARTER=50/min, PRO=200/min, ENTERPRISE=1000/min
 async def skill_feedback(
     request: Request,
     skill_id: int,
@@ -1291,7 +1349,7 @@ async def skill_feedback(
     response_model=SkillsListResponse,
     tags=["Skills"],
 )
-@limiter.limit("50/minute")
+@limiter.limit(SKILLS_RATE_LIMIT)  # Tier-based skills rate limit
 async def list_skills(
     request: Request,
     customer: Customer = Depends(get_authenticated_customer),
@@ -1376,7 +1434,7 @@ async def list_skills(
     "/api/v1/skills/{skill_id}",
     tags=["Skills"],
 )
-@limiter.limit("100/minute")
+@limiter.limit(SKILLS_RATE_LIMIT)  # Tier-based skills rate limit
 async def get_skill(
     request: Request,
     skill_id: int,

@@ -6,6 +6,7 @@ Provides:
 - Readiness probe: Is the service ready to accept traffic? (dependency checks)
 - Detailed health status with component breakdown
 - Fast response times (<10ms for liveness, <100ms for readiness)
+- Configurable thresholds for degraded state detection
 
 Architecture:
 - Liveness: Minimal check, always returns 200 unless service is completely dead
@@ -16,7 +17,7 @@ Performance:
 - Liveness probe: <5ms (no I/O operations)
 - Readiness probe: <100ms (includes dependency checks)
 - Health probes are NOT rate limited
-- Cached dependency status (5-second TTL)
+- Cached dependency status (configurable TTL, default 5 seconds)
 
 Kubernetes Integration:
 ```yaml
@@ -47,6 +48,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from src.config import HealthCheckConfig
 from src.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +63,7 @@ class HealthStatus(str, Enum):
     """Health status enumeration."""
 
     HEALTHY = "healthy"  # All checks passed
-    DEGRADED = "degraded"  # Some non-critical checks failed
+    DEGRADED = "degraded"  # Some non-critical checks failed or latency high
     UNHEALTHY = "unhealthy"  # Critical checks failed
 
 
@@ -121,22 +123,35 @@ class HealthChecker:
     - Check embedding service readiness
     - Cache health status to avoid excessive checks
     - Track service uptime
+    - Apply configurable latency thresholds for degraded state detection
 
     Performance:
-    - Health checks are cached (5-second TTL)
+    - Health checks are cached (configurable TTL, default 5 seconds)
     - Liveness probe: <5ms (no I/O)
     - Readiness probe: <100ms (with I/O)
     """
 
-    def __init__(self):
-        """Initialize health checker."""
+    def __init__(self, config: Optional[HealthCheckConfig] = None):
+        """
+        Initialize health checker with optional configuration.
+        
+        Args:
+            config: Health check configuration. If None, uses defaults.
+        """
         self.start_time = time.time()
         self.version = "0.1.0"  # TODO: Read from config
 
-        # Cached health status (5-second TTL)
+        # Load configuration (use defaults if not provided)
+        self.config = config or HealthCheckConfig()
+
+        # Cached health status (configurable TTL)
         self._health_cache: Optional[HealthCheckResponse] = None
         self._health_cache_time: float = 0.0
-        self._health_cache_ttl: float = 5.0  # 5 seconds
+        self._health_cache_ttl: float = self.config.cache_ttl_seconds
+
+        # Circuit breaker state for health checks
+        self._consecutive_failures: dict[str, int] = {}
+        self._consecutive_successes: dict[str, int] = {}
 
     def get_uptime_seconds(self) -> float:
         """
@@ -146,6 +161,75 @@ class HealthChecker:
             float: Uptime in seconds
         """
         return time.time() - self.start_time
+
+    def _evaluate_latency_status(
+        self,
+        latency_ms: float,
+        warning_threshold_ms: float,
+        error_threshold_ms: float,
+    ) -> tuple[HealthStatus, str]:
+        """
+        Evaluate health status based on latency thresholds.
+        
+        Args:
+            latency_ms: Measured latency in milliseconds
+            warning_threshold_ms: Threshold for degraded status
+            error_threshold_ms: Threshold for unhealthy status
+            
+        Returns:
+            Tuple of (HealthStatus, status_message)
+        """
+        if latency_ms >= error_threshold_ms:
+            return (
+                HealthStatus.UNHEALTHY,
+                f"Latency {latency_ms:.1f}ms exceeds error threshold {error_threshold_ms:.1f}ms"
+            )
+        elif latency_ms >= warning_threshold_ms:
+            return (
+                HealthStatus.DEGRADED,
+                f"Latency {latency_ms:.1f}ms exceeds warning threshold {warning_threshold_ms:.1f}ms"
+            )
+        else:
+            return (HealthStatus.HEALTHY, f"Latency {latency_ms:.1f}ms within limits")
+
+    def _update_circuit_state(self, component: str, success: bool) -> None:
+        """
+        Update circuit breaker state for a component.
+        
+        Tracks consecutive failures/successes for smarter health decisions.
+        
+        Args:
+            component: Component name
+            success: Whether the health check succeeded
+        """
+        if success:
+            self._consecutive_failures[component] = 0
+            self._consecutive_successes[component] = (
+                self._consecutive_successes.get(component, 0) + 1
+            )
+        else:
+            self._consecutive_successes[component] = 0
+            self._consecutive_failures[component] = (
+                self._consecutive_failures.get(component, 0) + 1
+            )
+
+    def _is_circuit_open(self, component: str) -> bool:
+        """
+        Check if circuit breaker is open for a component.
+        
+        Returns True if consecutive failures exceed threshold.
+        """
+        failures = self._consecutive_failures.get(component, 0)
+        return failures >= self.config.consecutive_failures_threshold
+
+    def _is_circuit_recovering(self, component: str) -> bool:
+        """
+        Check if circuit breaker is recovering for a component.
+        
+        Returns True if consecutive successes meet recovery threshold.
+        """
+        successes = self._consecutive_successes.get(component, 0)
+        return successes >= self.config.recovery_threshold
 
     async def check_liveness(self) -> LivenessResponse:
         """
@@ -314,7 +398,7 @@ class HealthChecker:
         """
         Check KyroDB connection health.
 
-        Checks both text and image instances.
+        Checks both text and image instances with configurable latency thresholds.
 
         Returns:
             ComponentHealth: KyroDB health status
@@ -330,10 +414,24 @@ class HealthChecker:
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 
-            # Both instances must be healthy
+            # Check latency thresholds
+            latency_status, latency_message = self._evaluate_latency_status(
+                latency_ms,
+                self.config.kyrodb_latency_warning_ms,
+                self.config.kyrodb_latency_error_ms,
+            )
+
+            # Determine overall status based on instances and latency
             if text_healthy and image_healthy:
-                status = HealthStatus.HEALTHY
-                message = "Both text and image instances healthy"
+                if latency_status == HealthStatus.UNHEALTHY:
+                    status = HealthStatus.UNHEALTHY
+                    message = f"Instances healthy but {latency_message}"
+                elif latency_status == HealthStatus.DEGRADED:
+                    status = HealthStatus.DEGRADED
+                    message = f"Instances healthy but {latency_message}"
+                else:
+                    status = HealthStatus.HEALTHY
+                    message = "Both text and image instances healthy"
             elif text_healthy or image_healthy:
                 status = HealthStatus.DEGRADED
                 message = (
@@ -345,6 +443,9 @@ class HealthChecker:
                 status = HealthStatus.UNHEALTHY
                 message = "Both instances unhealthy"
 
+            # Update circuit breaker state
+            self._update_circuit_state("kyrodb", status != HealthStatus.UNHEALTHY)
+
             return ComponentHealth(
                 name="kyrodb",
                 status=status,
@@ -354,6 +455,9 @@ class HealthChecker:
                 metadata={
                     "text_healthy": text_healthy,
                     "image_healthy": image_healthy,
+                    "latency_threshold_warning_ms": self.config.kyrodb_latency_warning_ms,
+                    "latency_threshold_error_ms": self.config.kyrodb_latency_error_ms,
+                    "circuit_open": self._is_circuit_open("kyrodb"),
                 },
             )
 
@@ -361,6 +465,9 @@ class HealthChecker:
             latency_ms = (time.perf_counter() - start_time) * 1000
 
             logger.error("KyroDB health check failed", error=str(e), exc_info=True)
+            
+            # Update circuit breaker state
+            self._update_circuit_state("kyrodb", False)
 
             return ComponentHealth(
                 name="kyrodb",
@@ -368,6 +475,10 @@ class HealthChecker:
                 message=f"Health check failed: {str(e)}",
                 latency_ms=round(latency_ms, 2),
                 last_check=datetime.now(timezone.utc),
+                metadata={
+                    "circuit_open": self._is_circuit_open("kyrodb"),
+                    "consecutive_failures": self._consecutive_failures.get("kyrodb", 0),
+                },
             )
 
     async def _check_database_health(self, customer_db) -> ComponentHealth:
@@ -525,14 +636,27 @@ class HealthChecker:
 _health_checker: Optional[HealthChecker] = None
 
 
-def get_health_checker() -> HealthChecker:
+def get_health_checker(config: Optional[HealthCheckConfig] = None) -> HealthChecker:
     """
     Get global health checker instance.
+    
+    Args:
+        config: Optional health check configuration. Only used on first call.
 
     Returns:
         HealthChecker: Global health checker
     """
     global _health_checker
     if _health_checker is None:
-        _health_checker = HealthChecker()
+        _health_checker = HealthChecker(config=config)
     return _health_checker
+
+
+def reset_health_checker() -> None:
+    """
+    Reset the global health checker instance.
+    
+    Used for testing or when configuration changes require a fresh instance.
+    """
+    global _health_checker
+    _health_checker = None

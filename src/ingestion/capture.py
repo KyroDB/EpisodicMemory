@@ -73,6 +73,9 @@ class IngestionPipeline:
         self.settings = get_settings()
         self.total_ingested = 0
         self.total_failures = 0
+        
+        # Track pending background tasks for graceful shutdown
+        self._pending_tasks: set[asyncio.Task] = set()
 
         if reflection_service:
             logger.info(
@@ -81,6 +84,49 @@ class IngestionPipeline:
             )
         else:
             logger.warning("Reflection service disabled - no LLM API keys configured")
+
+    async def shutdown(self, timeout: float = 30.0) -> None:
+        """
+        Gracefully shutdown the ingestion pipeline.
+        
+        Waits for all pending background reflection tasks to complete
+        before returning. This ensures no reflections are lost during
+        application shutdown.
+        
+        Args:
+            timeout: Maximum seconds to wait for pending tasks.
+                     After timeout, remaining tasks are cancelled.
+        """
+        pending_count = len(self._pending_tasks)
+        if pending_count == 0:
+            logger.info("No pending reflection tasks to complete")
+            return
+            
+        logger.info(f"Waiting for {pending_count} pending reflection tasks...")
+        
+        try:
+            # Wait for all pending tasks with timeout
+            done, pending = await asyncio.wait(
+                self._pending_tasks,
+                timeout=timeout,
+                return_when=asyncio.ALL_COMPLETED
+            )
+            
+            if pending:
+                logger.warning(
+                    f"Timeout reached, cancelling {len(pending)} pending tasks"
+                )
+                for task in pending:
+                    task.cancel()
+                # Wait briefly for cancellations to complete
+                await asyncio.gather(*pending, return_exceptions=True)
+            
+            logger.info(
+                f"Reflection task shutdown complete: "
+                f"{len(done)} completed, {len(pending)} cancelled"
+            )
+        except Exception as e:
+            logger.error(f"Error during pipeline shutdown: {e}", exc_info=True)
 
     async def capture_episode(
         self,
@@ -150,13 +196,16 @@ class IngestionPipeline:
 
             # Step 7: Queue async reflection generation (non-blocking)
             if generate_reflection and self.reflection_service:
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._generate_and_update_reflection(
                         episode_id, 
                         episode_data, 
                         tier_override
                     )
                 )
+                # Track task for graceful shutdown
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
             self.total_ingested += 1
             logger.info(

@@ -517,9 +517,12 @@ class TestSkillsKyroDBOperations:
             success=True,
         )
 
-        assert success is True
+        # update_skill_stats returns the updated Skill object on success, None on failure
+        assert success is not None
+        assert success.usage_count == 6  # 5 + 1
+        assert success.success_count == 5  # 4 + 1
 
-        # Verify stats were incremented
+        # Verify stats were incremented in the insert call
         insert_call = mock_client.insert.call_args
         updated_metadata = insert_call.kwargs["metadata"]
         assert updated_metadata["usage_count"] == "6"  # 5 + 1

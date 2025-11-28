@@ -107,16 +107,21 @@ def mock_reflection_service():
         )
     )
     service.generate_multi_perspective_reflection.return_value = reflection
+    service.generate_reflection.return_value = reflection
     service.config.enabled_providers = ["gpt-4", "claude-3", "openrouter-model"]
     return service
 
 @pytest.fixture
-def ingestion_pipeline(mock_kyrodb_router, mock_embedding_service, mock_reflection_service):
-    return IngestionPipeline(
+async def ingestion_pipeline(mock_kyrodb_router, mock_embedding_service, mock_reflection_service):
+    pipeline = IngestionPipeline(
         kyrodb_router=mock_kyrodb_router,
         embedding_service=mock_embedding_service,
         reflection_service=mock_reflection_service,
     )
+    try:
+        yield pipeline
+    finally:
+        await pipeline.shutdown(timeout=5.0)
 
 @pytest.fixture
 def skill_promotion_service(mock_kyrodb_router, mock_embedding_service):
@@ -259,7 +264,6 @@ async def test_e2e_lifecycle_failure_to_prevention(
     assert response.confidence > 0.8
     assert "similar" in response.rationale.lower() or "found" in response.rationale.lower()
 
-@pytest.mark.skip(reason="Test mock setup issue - AsyncMock formatting in logging causes TypeError")
 @pytest.mark.asyncio
 async def test_e2e_reflection_consensus_metrics(
     ingestion_pipeline,
