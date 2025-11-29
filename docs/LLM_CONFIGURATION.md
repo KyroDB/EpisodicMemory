@@ -18,10 +18,13 @@ OPENROUTER_API_KEY=sk-or-v1-your-api-key
 ### Optional Settings
 
 ```bash
-# Model selection (defaults are good for most users)
-LLM_CHEAP_MODEL=google/gemini-flash-1.5
-LLM_CONSENSUS_MODEL_1=anthropic/claude-3.5-sonnet
-LLM_CONSENSUS_MODEL_2=openai/gpt-4o
+# LLM CONFIGURATION (OpenRouter - Free Tier)
+# OpenRouter unified API for all LLM calls
+LLM_OPENROUTER_API_KEY=your-openrouter-api-key
+LLM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+LLM_CHEAP_MODEL=x-ai/grok-4.1-fast:free
+LLM_CONSENSUS_MODEL_1=kwaipilot/kat-coder-pro:free
+LLM_CONSENSUS_MODEL_2=tngtech/deepseek-r1t2-chimera:free
 
 # Generation parameters
 LLM_TEMPERATURE=0.7
@@ -41,8 +44,8 @@ Vritti uses 3 tiers to balance cost and quality:
 | Tier | When Used | Cost | Model |
 |------|-----------|------|-------|
 | Cached | Identical failure seen before | $0.00 | N/A |
-| Cheap | Most failures | ~$0.001 | Gemini Flash |
-| Premium | Complex failures | ~$0.03 | Claude Sonnet |
+| Cheap | Most failures | ~$0.00 | OpenRouter free tier |
+| Premium | Complex failures | ~$0.00 | Multi-perspective (free tier) |
 
 ### Automatic Tier Selection
 
@@ -128,21 +131,6 @@ When daily limit reached:
 - Premium tier blocked
 - Warning logged
 
-## Model Selection
-
-### Cheap Tier (Default)
-
-Good options:
-- `google/gemini-flash-1.5` - Fast, cheap, good quality (default)
-- `anthropic/claude-3-haiku` - Very fast, low cost
-- `meta-llama/llama-3-8b-instruct` - Open source option
-
-### Premium Tier (Complex Failures)
-
-Good options:
-- `anthropic/claude-3.5-sonnet` - Best quality (default)
-- `openai/gpt-4o` - Strong reasoning
-- `anthropic/claude-3-opus` - Maximum quality (expensive)
 
 ## Troubleshooting
 
@@ -170,7 +158,7 @@ Options:
 
 Check:
 1. OpenRouter status page
-2. Switch to faster model (Gemini Flash)
+2. Switch to faster free model (Grok Fast)
 3. Check network latency
 
 ## Monitoring

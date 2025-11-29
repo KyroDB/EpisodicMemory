@@ -30,7 +30,7 @@ Vritti learns from failures and blocks similar actions before they fail:
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.9+
 - KyroDB server running (ports 50051 for text, 50052 for images)
 
 ### Installation

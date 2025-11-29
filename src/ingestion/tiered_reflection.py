@@ -385,6 +385,7 @@ class TieredReflectionService:
             embedding_service: Optional embedding service (for cluster matching)
         """
         self.config = config
+        self.llm_config = config  # Store for health check access
         
         # Initialize services
         self.cheap_service = CheapReflectionService(config)

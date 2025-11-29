@@ -883,7 +883,7 @@ Return ONLY valid JSON, no markdown."""
             agreed_resolution=agreed_resolution,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
         )
 
     def _reconcile_multiple_perspectives(
@@ -964,7 +964,7 @@ Return ONLY valid JSON, no markdown."""
             agreed_resolution=best_resolution_perspective.resolution_strategy,
             consensus_confidence=consensus_confidence,
             disagreement_points=disagreement_points,
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
         )
 
     @classmethod
@@ -1156,7 +1156,7 @@ Return ONLY valid JSON, no markdown."""
             generalization_score=0.3,
             confidence_score=0.4,  # Low confidence for heuristic
             llm_model="fallback_heuristic",
-            generated_at=datetime.now(UTC),
+            generated_at=datetime.now(timezone.utc),
             cost_usd=0.0,  # Free
             generation_latency_ms=0.0,
         )

@@ -59,7 +59,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 │  │  Port: 50051         │      │ Port: 50052          │        │
 │  └──────────────────────┘      └──────────────────────┘        │
 │                                                                  │
-│  3-tier caching: 71.7% hit rate, <1ms P99 vector search        │
+│  3-tier caching: 73.5% hit rate, <1ms P99 vector search        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,7 +81,7 @@ Vritti is a multi-tenant episodic memory platform for AI coding assistants. The 
 - Dual-instance: text/code (384-dim) + images (512-dim CLIP)
 - 3-tier caching: Learned cache → Hot tier → Cold tier
 - <1ms P99 vector search at 10M vectors
-- 71.7% cache hit rate (validated)
+- 73.5% cache hit rate (validated)
 
 **Observability**:
 - Prometheus: Metrics collection at `/metrics`
@@ -199,9 +199,8 @@ ENTERPRISE: Unlimited
 | Metric | Target | Current |
 |--------|--------|---------|
 | Concurrent requests | 500 req/s | 600 req/s |
-| KyroDB cache hit rate | >70% | 71.7% |
+| KyroDB cache hit rate | >70% | 73.5% |
 | API availability | 99.9% | 99.95% |
 
 ---
 
-**Last Updated**: 2025-11-28

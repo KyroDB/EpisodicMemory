@@ -139,7 +139,8 @@ class HealthChecker:
             config: Health check configuration. If None, uses defaults.
         """
         self.start_time = time.time()
-        self.version = "0.1.0"  # TODO: Read from config
+        self.version = "0.1.0"
+
 
         # Load configuration (use defaults if not provided)
         self.config = config or HealthCheckConfig()
@@ -591,10 +592,9 @@ class HealthChecker:
         start_time = time.perf_counter()
 
         try:
-            # Check if API key is configured
-            api_key_configured = hasattr(reflection_service, "api_key") and bool(
-                reflection_service.api_key
-            )
+            # Check if API key is configured (check LLM config)
+            has_config = hasattr(reflection_service, "llm_config")
+            api_key_configured = has_config and reflection_service.llm_config.has_any_api_key if has_config else False
 
             latency_ms = (time.perf_counter() - start_time) * 1000
 

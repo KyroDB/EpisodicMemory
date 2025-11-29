@@ -75,10 +75,11 @@ async def kyrodb_router():
     
     Uses same port for both text and image (single-instance testing).
     Uses try/finally to ensure proper resource cleanup even on test failure.
+    Skips test if KyroDB is not available.
     
     Usage:
         @pytest.mark.asyncio
-        async def test_episode_insert(skip_if_no_kyrodb, kyrodb_router):
+        async def test_episode_insert(kyrodb_router):
             success, _ = await kyrodb_router.insert_episode(...)
             assert success
     """
@@ -91,7 +92,10 @@ async def kyrodb_router():
         request_timeout_seconds=30,
     )
     router = KyroDBRouter(config=config)
-    await router.connect()
+    try:
+        await router.connect()
+    except Exception as e:
+        pytest.skip(f"KyroDB not available at localhost:50051: {e}")
     try:
         yield router
     finally:

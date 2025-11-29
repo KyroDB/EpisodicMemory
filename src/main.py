@@ -679,10 +679,10 @@ async def capture_episode(
         HTTPException 500: Ingestion failure
 
     Security:
-        ✓ customer_id extracted from validated API key (cannot be spoofed)
-        ✓ User-provided customer_id in request body is IGNORED
-        ✓ API key validated with bcrypt
-        ✓ Quota enforcement (soft limit with warning)
+        - customer_id extracted from validated API key (cannot be spoofed)
+        - User-provided customer_id in request body is IGNORED
+        - API key validated with bcrypt
+        - Quota enforcement (soft limit with warning)
 
     Usage Billing:
         - Base cost: 1 credit per episode
@@ -1040,10 +1040,10 @@ async def search_episodes(
         HTTPException 500: Search failure
 
     Security:
-        ✓ customer_id extracted from validated API key (cannot be spoofed)
-        ✓ User-provided customer_id in request body is IGNORED
-        ✓ API key validated with bcrypt
-        ✓ Namespace isolation (only searches customer's episodes)
+        - customer_id extracted from validated API key (cannot be spoofed)
+        - User-provided customer_id in request body is IGNORED
+        - API key validated with bcrypt
+        - Namespace isolation (only searches customer's episodes)
 
     Usage Billing:
         - Base cost: 0.1 credits per search
@@ -1578,7 +1578,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     """
     if not reflection_service:
         return BudgetResponse(
-            date=str(datetime.now(UTC).date()),
+            date=str(datetime.now(timezone.utc).date()),
             daily_cost_usd=0.0,
             warning_threshold_usd=10.0,
             limit_threshold_usd=50.0,
@@ -1594,7 +1594,7 @@ async def get_budget_status(_: None = Depends(require_admin_access)):
     daily = stats.get("daily_cost", {})
 
     return BudgetResponse(
-        date=daily.get("date", str(datetime.now(UTC).date())),
+        date=daily.get("date", str(datetime.now(timezone.utc).date())),
         daily_cost_usd=daily.get("daily_cost_usd", 0.0),
         warning_threshold_usd=daily.get("warning_threshold_usd", 10.0),
         limit_threshold_usd=daily.get("limit_threshold_usd", 50.0),

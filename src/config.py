@@ -28,7 +28,11 @@ class KyroDBConnection(BaseSettings):
 class KyroDBConfig(BaseSettings):
     """KyroDB dual-instance configuration for multi-modal embeddings."""
 
-    model_config = SettingsConfigDict(env_prefix="KYRODB_")
+    model_config = SettingsConfigDict(
+        env_prefix="KYRODB_",
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
 
     text_host: str = Field(default="localhost")
     text_port: int = Field(default=50051, ge=1, le=65535)
@@ -83,7 +87,11 @@ class KyroDBConfig(BaseSettings):
 class EmbeddingConfig(BaseSettings):
     """Embedding model configuration."""
 
-    model_config = SettingsConfigDict(env_prefix="EMBEDDING_")
+    model_config = SettingsConfigDict(
+        env_prefix="EMBEDDING_",
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
 
     # Text/code embeddings (sentence-transformers)
     text_model_name: str = Field(default="all-MiniLM-L6-v2")
@@ -117,7 +125,11 @@ class LLMConfig(BaseSettings):
     Security: API keys are never logged or exposed in errors.
     """
 
-    model_config = SettingsConfigDict(env_prefix="LLM_")
+    model_config = SettingsConfigDict(
+        env_prefix="LLM_",
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
 
     # OpenRouter configuration (primary)
     openrouter_api_key: str = Field(
@@ -538,7 +550,7 @@ class ReflectionConfig(BaseSettings):
     # Tier defaults
     default_tier: Literal["auto", "cheap", "premium"] = Field(
         default="auto",
-        description="Default tier: auto (intelligent selection), cheap (force Gemini Flash), premium (force multi-perspective)"
+        description="Default tier: auto (intelligent selection), cheap (OpenRouter free tier), premium (multi-perspective)"
     )
 
     # Premium triggers (error classes that force premium tier)
@@ -667,7 +679,7 @@ class Settings(BaseSettings):
         Called at application startup.
         """
         # Check LLM API key
-        if not self.llm.api_key:
+        if not self.llm.has_any_api_key:
             import logging
 
             logging.warning("LLM API key not configured - reflection generation will be disabled")

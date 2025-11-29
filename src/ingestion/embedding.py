@@ -85,7 +85,7 @@ class EmbeddingService:
                     f"expected {self.config.text_dimension}, got {actual_dim}"
                 )
 
-            logger.info(f"✓ Text model loaded ({actual_dim}-dim)")
+            logger.info(f"Text model loaded ({actual_dim}-dim)")
 
         return self._text_model
 
@@ -104,7 +104,7 @@ class EmbeddingService:
             self._clip_model.to(self._device)
             self._clip_model.eval()  # Inference mode
 
-            logger.info(f"✓ CLIP model loaded (device: {self._device})")
+            logger.info(f"CLIP model loaded (device: {self._device})")
 
         return self._clip_model, self._clip_processor
 
@@ -291,14 +291,9 @@ class EmbeddingService:
         """
         logger.info("Warming up embedding models...")
 
-        # Warm up text model
         self.embed_text("warmup text")
-        logger.info("✓ Text model warmed up")
+        logger.info("Text model warmed up")
 
-        # Warm up CLIP model (skip if no images will be used)
-        # TODO: Make this configurable
-        # self.embed_image("path/to/dummy/image.png")
-        # logger.info("✓ CLIP model warmed up")
 
     def get_info(self) -> dict[str, any]:
         """

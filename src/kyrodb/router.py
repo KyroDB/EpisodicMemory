@@ -97,11 +97,11 @@ class KyroDBRouter:
         logger.info("Connecting to KyroDB instances...")
         await self.text_client.connect()
         self._text_connected = True
-        logger.info(f"✓ Text instance connected ({self.text_client.address})")
+        logger.info(f"Text instance connected ({self.text_client.address})")
 
         await self.image_client.connect()
         self._image_connected = True
-        logger.info(f"✓ Image instance connected ({self.image_client.address})")
+        logger.info(f"Image instance connected ({self.image_client.address})")
 
     async def close(self) -> None:
         """Close connections to both instances."""

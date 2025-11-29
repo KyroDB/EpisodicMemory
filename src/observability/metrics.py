@@ -166,7 +166,7 @@ search_results_returned = Histogram(
     buckets=(0, 1, 5, 10, 20, 50, 100),
 )
 
-# Credit usage tracking (billing)
+# Credit usage tracking
 credits_used_total = Counter(
     "episodic_memory_credits_used_total",
     "Total credits consumed",
@@ -487,7 +487,7 @@ reflection_cost_per_episode_usd = Histogram(
     "Cost per reflection in USD",
     labelnames=["consensus_method"],
     buckets=(
-        0.001,  # $0.001 (Gemini Flash)
+        0.001,  # $0.001 (OpenRouter free tier)
         0.005,  # $0.005
         0.010,  # $0.01
         0.050,  # $0.05 (typical multi-perspective)

@@ -4,14 +4,18 @@ Resilience patterns for external dependencies.
 Circuit breakers prevent cascade failures when dependencies fail.
 """
 
-from src.resilience.circuit_breakers import (
+from .circuit_breakers import (
+    KyroDBCircuitBreakerError,
     get_kyrodb_breaker,
-    get_stripe_breaker,
     reset_all_breakers,
+    with_kyrodb_circuit_breaker,
+    with_retry,
 )
 
 __all__ = [
+    "KyroDBCircuitBreakerError",
     "get_kyrodb_breaker",
-    "get_stripe_breaker",
     "reset_all_breakers",
+    "with_kyrodb_circuit_breaker",
+    "with_retry",
 ]
