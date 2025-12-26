@@ -37,6 +37,10 @@ class GatingService:
     REWRITE_SIMILARITY = 0.8  # Similarity threshold for rewrite suggestion
     REWRITE_PRECONDITION = 0.5  # Precondition match threshold for rewrite
     HINT_SIMILARITY = 0.7  # Similarity threshold for showing hints
+    
+    # Display limits for hints and context
+    MAX_ACTION_HINT_LENGTH = 100  # Maximum characters for action hints
+    MAX_ENV_FACTORS_IN_HINTS = 3  # Maximum environment factors to show in hints
 
     def __init__(self, search_pipeline: SearchPipeline, kyrodb_router: KyroDBRouter):
         self.search_pipeline = search_pipeline
@@ -215,7 +219,7 @@ class GatingService:
                 
                 # Add hint about proposed action for context
                 if proposed_action:
-                    hints.append(f"Original action: {proposed_action[:100]}")
+                    hints.append(f"Original action: {proposed_action[:self.MAX_ACTION_HINT_LENGTH]}")
                 
                 return (
                     ActionRecommendation.REWRITE,
@@ -272,12 +276,12 @@ class GatingService:
             # Add environment warning if there's a mismatch
             if not environment_match and environment_factors:
                 hints.append(
-                    f"Warning: Environment differs from failure (required: {', '.join(environment_factors[:3])})"
+                    f"Warning: Environment differs from failure (required: {', '.join(environment_factors[:self.MAX_ENV_FACTORS_IN_HINTS])})"
                 )
             
             # Add proposed action context
             if proposed_action:
-                hints.append(f"Blocked action: {proposed_action[:100]}")
+                hints.append(f"Blocked action: {proposed_action[:self.MAX_ACTION_HINT_LENGTH]}")
             
             return (
                 ActionRecommendation.BLOCK,
@@ -301,7 +305,7 @@ class GatingService:
             
             # Add environment context if available
             if environment_match and environment_factors:
-                hints.append(f"Environment matches failure conditions: {', '.join(environment_factors[:2])}")
+                hints.append(f"Environment matches failure conditions: {', '.join(environment_factors[:self.MAX_ENV_FACTORS_IN_HINTS])}")
             
             return (
                 ActionRecommendation.REWRITE,
