@@ -14,7 +14,7 @@ Designed for <50ms P99 latency.
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from threading import Lock
 
 from src.config import get_settings
