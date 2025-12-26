@@ -6,7 +6,7 @@ Analyzes proposed actions against historical episodes to prevent repeat failures
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
@@ -178,11 +178,11 @@ class GatingService:
 
     def _determine_gating_recommendation(
         self,
-        _proposed_action: str,
+        proposed_action: str,
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
-        _current_state: dict[str, Any]
-    ) -> tuple[ActionRecommendation, float, str, Optional[str], list[str]]:
+        current_state: dict[str, Any]
+    ) -> tuple[ActionRecommendation, float, str, str | None, list[str]]:
         """
         Determine gating recommendation based on matched failures and skills.
 
@@ -190,6 +190,12 @@ class GatingService:
         1. Skills (proven solutions) - suggest REWRITE if high confidence
         2. Failures - BLOCK/REWRITE/HINT based on confidence
         3. Default - PROCEED if no matches
+
+        Args:
+            proposed_action: The action the agent wants to execute
+            matched_failures: Similar past failures found
+            matched_skills: Relevant skills found
+            current_state: Current environment state for precondition matching
 
         Returns:
             (recommendation, confidence, rationale, suggested_action, hints)
@@ -202,15 +208,21 @@ class GatingService:
             if score >= self.SKILL_HIGH_CONFIDENCE:
                 # We have a proven solution with high confidence
                 # Suggest using the skill instead of the proposed action
+                hints = [
+                    f"Success rate: {top_skill.success_rate * 100:.0f}%",
+                    f"Skill documentation: {top_skill.docstring}"
+                ]
+                
+                # Add hint about proposed action for context
+                if proposed_action:
+                    hints.append(f"Original action: {proposed_action[:100]}")
+                
                 return (
                     ActionRecommendation.REWRITE,
                     0.9,
                     f"Found proven solution: '{top_skill.name}' (used {top_skill.usage_count}× successfully)",
                     top_skill.code,  # Suggest the skill's code
-                    [
-                        f"Success rate: {top_skill.success_rate * 100:.0f}%",
-                        f"Skill documentation: {top_skill.docstring}"
-                    ]
+                    hints
                 )
 
         # 2. No high-confidence skills found, check failures
@@ -237,9 +249,14 @@ class GatingService:
         # Extract reflection data safely
         root_cause = "Unknown"
         resolution = None
+        environment_factors = []
         if top_match.episode.reflection:
             root_cause = top_match.episode.reflection.root_cause
             resolution = top_match.episode.reflection.resolution_strategy
+            environment_factors = top_match.episode.reflection.environment_factors
+        
+        # Check if current environment matches failure's environment factors
+        environment_match = self._check_environment_match(current_state, environment_factors)
 
         # 3. Check for BLOCK (highest confidence failure match)
         if (similarity_score >= self.BLOCK_SIMILARITY and
@@ -250,12 +267,24 @@ class GatingService:
                 f"{precondition_score:.2f} precondition match). Root cause: {root_cause}"
             )
             
+            hints = [f"Previous failure: {top_match.episode.create_data.goal}"]
+            
+            # Add environment warning if there's a mismatch
+            if not environment_match and environment_factors:
+                hints.append(
+                    f"Warning: Environment differs from failure (required: {', '.join(environment_factors[:3])})"
+                )
+            
+            # Add proposed action context
+            if proposed_action:
+                hints.append(f"Blocked action: {proposed_action[:100]}")
+            
             return (
                 ActionRecommendation.BLOCK,
                 0.95,
                 rationale,
                 resolution,  # Suggest the fix from the failure
-                [f"Previous failure: {top_match.episode.create_data.goal}"]
+                hints
             )
 
         # 4. Check for REWRITE (medium-high confidence)
@@ -268,12 +297,18 @@ class GatingService:
                 f"Suggested alternative available. Root cause: {root_cause}"
             )
             
+            hints = [f"Based on failure: {top_match.episode.create_data.goal}"]
+            
+            # Add environment context if available
+            if environment_match and environment_factors:
+                hints.append(f"Environment matches failure conditions: {', '.join(environment_factors[:2])}")
+            
             return (
                 ActionRecommendation.REWRITE,
                 0.85,
                 rationale,
                 resolution,
-                [f"Based on failure: {top_match.episode.create_data.goal}"]
+                hints
             )
 
         # 5. Check for HINT (medium confidence)
@@ -300,3 +335,36 @@ class GatingService:
                 None,
                 []
             )
+
+    def _check_environment_match(
+        self, current_state: dict[str, Any], environment_factors: list[str]
+    ) -> bool:
+        """
+        Check if current environment state matches the failure's environment factors.
+
+        Args:
+            current_state: Current environment state (OS, versions, tools, etc.)
+            environment_factors: List of environment factors from the failure
+
+        Returns:
+            True if there's a reasonable match, False otherwise
+        """
+        if not current_state or not environment_factors:
+            # If either is missing, we can't make a determination
+            # Return True (assume match) to be conservative
+            return True
+
+        # Convert current_state values to lowercase strings for comparison
+        current_state_str = " ".join(
+            str(v).lower() for v in current_state.values() if v is not None
+        )
+
+        # Check if any environment factor appears in current state
+        matches = 0
+        for factor in environment_factors:
+            if factor.lower() in current_state_str:
+                matches += 1
+
+        # Consider it a match if at least one factor is found
+        # or if there are no specific factors to check
+        return matches > 0 or len(environment_factors) == 0
