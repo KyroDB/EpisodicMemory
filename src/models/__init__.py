@@ -16,7 +16,6 @@ Example:
     >>> request = SearchRequest(goal="Fix deployment issue")
 """
 
-# Episode models
 # Clustering models
 from src.models.clustering import (
     ClusterInfo,
@@ -34,6 +33,8 @@ from src.models.customer import (
     CustomerUpdate,
     SubscriptionTier,
 )
+
+# Episode models
 from src.models.episode import (
     Episode,
     EpisodeCreate,
