@@ -14,7 +14,7 @@ Designed for <50ms P99 latency.
 
 import logging
 import time
-from datetime import timezone, datetime
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Optional
 
