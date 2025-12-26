@@ -219,7 +219,10 @@ class GatingService:
                 
                 # Add hint about proposed action for context
                 if proposed_action:
-                    hints.append(f"Original action: {proposed_action[:self.MAX_ACTION_HINT_LENGTH]}")
+                    truncated_action = proposed_action[:self.MAX_ACTION_HINT_LENGTH]
+                    if len(proposed_action) > self.MAX_ACTION_HINT_LENGTH:
+                        truncated_action += "..."
+                    hints.append(f"Original action: {truncated_action}")
                 
                 return (
                     ActionRecommendation.REWRITE,
@@ -281,7 +284,10 @@ class GatingService:
             
             # Add proposed action context
             if proposed_action:
-                hints.append(f"Blocked action: {proposed_action[:self.MAX_ACTION_HINT_LENGTH]}")
+                truncated_action = proposed_action[:self.MAX_ACTION_HINT_LENGTH]
+                if len(proposed_action) > self.MAX_ACTION_HINT_LENGTH:
+                    truncated_action += "..."
+                hints.append(f"Blocked action: {truncated_action}")
             
             return (
                 ActionRecommendation.BLOCK,
@@ -358,16 +364,15 @@ class GatingService:
             # Return True (assume match) to be conservative
             return True
 
-        # Convert current_state values to lowercase strings for comparison
-        current_state_str = " ".join(
-            str(v).lower() for v in current_state.values() if v is not None
-        )
-
-        # Check if any environment factor appears in current state
+        # Check if any environment factor appears in current state values
+        # We check each value individually to avoid false positives from string concatenation
         matches = 0
         for factor in environment_factors:
-            if factor.lower() in current_state_str:
-                matches += 1
+            factor_lower = factor.lower()
+            for value in current_state.values():
+                if value is not None and factor_lower in str(value).lower():
+                    matches += 1
+                    break  # Found a match for this factor, move to next
 
         # Consider it a match if at least one factor is found
         # or if there are no specific factors to check
