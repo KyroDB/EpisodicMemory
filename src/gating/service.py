@@ -6,7 +6,7 @@ Analyzes proposed actions against historical episodes to prevent repeat failures
 
 import logging
 import time
-from typing import Any
+from typing import Any, NamedTuple, Optional
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
@@ -19,6 +19,23 @@ from src.observability.metrics import (
 from src.retrieval.search import SearchPipeline
 
 logger = logging.getLogger(__name__)
+
+
+class GatingRecommendationResult(NamedTuple):
+    """Result of gating recommendation analysis.
+    
+    Attributes:
+        recommendation: The action recommendation (PROCEED, BLOCK, REWRITE, HINT)
+        confidence: Confidence score (0.0-1.0) in the recommendation
+        rationale: Human-readable explanation of the decision
+        suggested_action: Optional alternative action to suggest
+        hints: List of helpful hints or warnings
+    """
+    recommendation: ActionRecommendation
+    confidence: float
+    rationale: str
+    suggested_action: Optional[str]
+    hints: list[str]
 
 
 class GatingService:
@@ -93,13 +110,7 @@ class GatingService:
             search_latency_ms = (time.perf_counter() - search_start) * 1000
 
             # 3. Determine recommendation
-            (
-                recommendation,
-                confidence,
-                rationale,
-                suggested_action,
-                hints
-            ) = self._determine_gating_recommendation(
+            result = self._determine_gating_recommendation(
                 request.proposed_action,
                 search_response.results,
                 matched_skills,
@@ -115,16 +126,16 @@ class GatingService:
 
             # Track gating decision metrics
             track_gating_decision(
-                recommendation=recommendation.value,
+                recommendation=result.recommendation.value,
                 customer_tier="default",  # TODO: Pass customer tier from context
-                confidence=confidence,
+                confidence=result.confidence,
                 latency_seconds=total_latency_ms / 1000.0,
                 matched_failures=len(search_response.results),
                 matched_skills=len(matched_skills),
             )
 
             # Track repeat error prevention
-            if (recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT] and
+            if (result.recommendation in [ActionRecommendation.BLOCK, ActionRecommendation.REWRITE, ActionRecommendation.HINT] and
                 len(search_response.results) > 0):
                 top_match = search_response.results[0]
                 error_class = "unknown"
@@ -153,16 +164,16 @@ class GatingService:
                     customer_id=customer_id,
                     customer_tier="default",
                     error_class=error_class,
-                    recommendation=recommendation.value,
+                    recommendation=result.recommendation.value,
                 )
 
             return ReflectResponse(
-                recommendation=recommendation,
-                confidence=confidence,
-                rationale=rationale,
+                recommendation=result.recommendation,
+                confidence=result.confidence,
+                rationale=result.rationale,
                 matched_failures=search_response.results,
-                suggested_action=suggested_action,
-                hints=hints,
+                suggested_action=result.suggested_action,
+                hints=result.hints,
                 relevant_skills=skills_dicts,
                 search_latency_ms=search_latency_ms,
                 total_latency_ms=total_latency_ms
@@ -185,8 +196,8 @@ class GatingService:
         proposed_action: str,
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
-        current_state: dict[str, Any]
-    ) -> tuple[ActionRecommendation, float, str, str | None, list[str]]:
+        _current_state: dict[str, Any]
+    ) -> GatingRecommendationResult:
         """
         Determine gating recommendation based on matched failures and skills.
 
@@ -194,15 +205,15 @@ class GatingService:
         1. Skills (proven solutions) - suggest REWRITE if high confidence
         2. Failures - BLOCK/REWRITE/HINT based on confidence
         3. Default - PROCEED if no matches
-
+        
         Args:
-            proposed_action: The action the agent wants to execute
-            matched_failures: Similar past failures found
-            matched_skills: Relevant skills found
-            current_state: Current environment state for precondition matching
-
+            _proposed_action: The proposed action (unused - reserved for future context-aware gating)
+            matched_failures: List of matched failure episodes from search
+            matched_skills: List of matched skills with confidence scores
+            _current_state: Current state dict (unused - reserved for future state-aware gating)
+        
         Returns:
-            (recommendation, confidence, rationale, suggested_action, hints)
+            GatingRecommendationResult with recommendation details
         """
         
         # 1. Check for high-confidence Skills first (proven solutions)
@@ -212,24 +223,15 @@ class GatingService:
             if score >= self.SKILL_HIGH_CONFIDENCE:
                 # We have a proven solution with high confidence
                 # Suggest using the skill instead of the proposed action
-                hints = [
-                    f"Success rate: {top_skill.success_rate * 100:.0f}%",
-                    f"Skill documentation: {top_skill.docstring}"
-                ]
-                
-                # Add hint about proposed action for context
-                if proposed_action:
-                    truncated_action = proposed_action[:self.MAX_ACTION_HINT_LENGTH]
-                    if len(proposed_action) > self.MAX_ACTION_HINT_LENGTH:
-                        truncated_action += "..."
-                    hints.append(f"Original action: {truncated_action}")
-                
-                return (
-                    ActionRecommendation.REWRITE,
-                    0.9,
-                    f"Found proven solution: '{top_skill.name}' (used {top_skill.usage_count}× successfully)",
-                    top_skill.code,  # Suggest the skill's code
-                    hints
+                return GatingRecommendationResult(
+                    recommendation=ActionRecommendation.REWRITE,
+                    confidence=0.9,
+                    rationale=f"Found proven solution: '{top_skill.name}' (used {top_skill.usage_count}× successfully)",
+                    suggested_action=top_skill.code,  # Suggest the skill's code
+                    hints=[
+                        f"Success rate: {top_skill.success_rate * 100:.0f}%",
+                        f"Skill documentation: {top_skill.docstring}"
+                    ]
                 )
 
         # 2. No high-confidence skills found, check failures
@@ -241,12 +243,12 @@ class GatingService:
                 skill, score = matched_skills[0]
                 hints.append(f"Related skill available: {skill.name} (confidence: {score:.2f})")
             
-            return (
-                ActionRecommendation.PROCEED,
-                1.0,
-                "No similar past failures found.",
-                None,
-                hints
+            return GatingRecommendationResult(
+                recommendation=ActionRecommendation.PROCEED,
+                confidence=1.0,
+                rationale="No similar past failures found.",
+                suggested_action=None,
+                hints=hints
             )
 
         top_match = matched_failures[0]
@@ -274,27 +276,12 @@ class GatingService:
                 f"{precondition_score:.2f} precondition match). Root cause: {root_cause}"
             )
             
-            hints = [f"Previous failure: {top_match.episode.create_data.goal}"]
-            
-            # Add environment warning if there's a mismatch
-            if not environment_match and environment_factors:
-                hints.append(
-                    f"Warning: Environment differs from failure (required: {', '.join(environment_factors[:self.MAX_ENV_FACTORS_IN_HINTS])})"
-                )
-            
-            # Add proposed action context
-            if proposed_action:
-                truncated_action = proposed_action[:self.MAX_ACTION_HINT_LENGTH]
-                if len(proposed_action) > self.MAX_ACTION_HINT_LENGTH:
-                    truncated_action += "..."
-                hints.append(f"Blocked action: {truncated_action}")
-            
-            return (
-                ActionRecommendation.BLOCK,
-                0.95,
-                rationale,
-                resolution,  # Suggest the fix from the failure
-                hints
+            return GatingRecommendationResult(
+                recommendation=ActionRecommendation.BLOCK,
+                confidence=0.95,
+                rationale=rationale,
+                suggested_action=resolution,  # Suggest the fix from the failure
+                hints=[f"Previous failure: {top_match.episode.create_data.goal}"]
             )
 
         # 4. Check for REWRITE (medium-high confidence)
@@ -307,18 +294,12 @@ class GatingService:
                 f"Suggested alternative available. Root cause: {root_cause}"
             )
             
-            hints = [f"Based on failure: {top_match.episode.create_data.goal}"]
-            
-            # Add environment context if available
-            if environment_match and environment_factors:
-                hints.append(f"Environment matches failure conditions: {', '.join(environment_factors[:self.MAX_ENV_FACTORS_IN_HINTS])}")
-            
-            return (
-                ActionRecommendation.REWRITE,
-                0.85,
-                rationale,
-                resolution,
-                hints
+            return GatingRecommendationResult(
+                recommendation=ActionRecommendation.REWRITE,
+                confidence=0.85,
+                rationale=rationale,
+                suggested_action=resolution,
+                hints=[f"Based on failure: {top_match.episode.create_data.goal}"]
             )
 
         # 5. Check for HINT (medium confidence)
@@ -328,22 +309,22 @@ class GatingService:
                 f"Previous resolution: {resolution if resolution else 'N/A'}"
             ]
             
-            return (
-                ActionRecommendation.HINT,
-                0.7,
-                "Similar failures detected, proceed with caution.",
-                None,
-                hints
+            return GatingRecommendationResult(
+                recommendation=ActionRecommendation.HINT,
+                confidence=0.7,
+                rationale="Similar failures detected, proceed with caution.",
+                suggested_action=None,
+                hints=hints
             )
 
         # 6. PROCEED (low confidence / weak match)
         else:
-            return (
-                ActionRecommendation.PROCEED,
-                0.8,
-                "Low similarity to past failures.",
-                None,
-                []
+            return GatingRecommendationResult(
+                recommendation=ActionRecommendation.PROCEED,
+                confidence=0.8,
+                rationale="Low similarity to past failures.",
+                suggested_action=None,
+                hints=[]
             )
 
     def _check_environment_match(
