@@ -375,5 +375,4 @@ class GatingService:
                     break  # Found a match for this factor, move to next
 
         # Consider it a match if at least one factor is found
-        # or if there are no specific factors to check
-        return matches > 0 or len(environment_factors) == 0
+        return matches > 0
