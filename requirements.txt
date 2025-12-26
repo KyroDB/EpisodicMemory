@@ -7,7 +7,7 @@ pydantic-settings==2.1.0
 # KyroDB gRPC client
 grpcio==1.60.0
 grpcio-tools==1.60.0
-protobuf==4.25.0
+protobuf==4.25.8
 
 # Embedding models
 sentence-transformers==2.3.0
