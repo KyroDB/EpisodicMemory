@@ -19,6 +19,10 @@ on:
   pull_request:
     branches: [main]
 
+# Set explicit permissions for security best practices
+permissions:
+  contents: read
+
 env:
   PYTHON_VERSION: '3.11'
 
