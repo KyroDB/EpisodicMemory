@@ -6,7 +6,7 @@ Analyzes proposed actions against historical episodes to prevent repeat failures
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from src.kyrodb.router import KyroDBRouter
 from src.models.gating import ActionRecommendation, ReflectRequest, ReflectResponse
@@ -182,7 +182,7 @@ class GatingService:
         matched_failures: list[SearchResult],
         matched_skills: list[tuple[Skill, float]],
         _current_state: dict[str, Any]
-    ) -> tuple[ActionRecommendation, float, str, Optional[str], list[str]]:
+    ) -> tuple[ActionRecommendation, float, str, str | None, list[str]]:
         """
         Determine gating recommendation based on matched failures and skills.
 
@@ -190,9 +190,22 @@ class GatingService:
         1. Skills (proven solutions) - suggest REWRITE if high confidence
         2. Failures - BLOCK/REWRITE/HINT based on confidence
         3. Default - PROCEED if no matches
-
+        
+        Args:
+            _proposed_action: The proposed action (unused - reserved for future context-aware gating)
+            matched_failures: List of matched failure episodes from search
+            matched_skills: List of matched skills with confidence scores
+            _current_state: Current state dict (unused - reserved for future state-aware gating)
+        
         Returns:
             (recommendation, confidence, rationale, suggested_action, hints)
+        
+        Note:
+            The _proposed_action and _current_state parameters are currently unused but
+            are kept for future enhancements:
+            - TODO: Use _proposed_action to perform action-specific risk assessment
+            - TODO: Use _current_state to validate preconditions against current environment
+            These will enable more context-aware gating decisions beyond similarity matching.
         """
         
         # 1. Check for high-confidence Skills first (proven solutions)

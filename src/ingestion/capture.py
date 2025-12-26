@@ -18,8 +18,7 @@ Designed for <50ms P99 latency (excluding async reflection).
 
 import asyncio
 import logging
-from datetime import timezone, datetime
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.config import get_settings
 from src.ingestion.embedding import EmbeddingService
@@ -27,7 +26,7 @@ from src.ingestion.tiered_reflection import (
     TieredReflectionService,
 )
 from src.kyrodb.router import KyroDBRouter
-from src.models.episode import Episode, EpisodeCreate, ReflectionTier
+from src.models.episode import Episode, EpisodeCreate, Reflection, ReflectionTier
 from src.utils.identifiers import (
     generate_episode_id,
     hash_environment,
@@ -54,7 +53,7 @@ class IngestionPipeline:
         self,
         kyrodb_router: KyroDBRouter,
         embedding_service: EmbeddingService,
-        reflection_service: Optional[TieredReflectionService] = None,
+        reflection_service: TieredReflectionService | None = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -134,7 +133,7 @@ class IngestionPipeline:
         self,
         episode_data: EpisodeCreate,
         generate_reflection: bool = True,
-        tier_override: Optional[ReflectionTier] = None,
+        tier_override: ReflectionTier | None = None,
     ) -> Episode:
         """
         Capture and store an episode.
@@ -182,7 +181,7 @@ class IngestionPipeline:
             episode = Episode(
                 create_data=episode_data,
                 episode_id=episode_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 retrieval_count=0,
                 reflection=None,  # Will be generated async
             )
@@ -260,7 +259,7 @@ class IngestionPipeline:
 
     async def _generate_embeddings(
         self, episode_data: EpisodeCreate
-    ) -> tuple[list[float], Optional[list[float]]]:
+    ) -> tuple[list[float], list[float] | None]:
         """
         Generate text and optional image embeddings.
 
@@ -296,7 +295,7 @@ class IngestionPipeline:
         self,
         episode: Episode,
         text_embedding: list[float],
-        image_embedding: Optional[list[float]],
+        image_embedding: list[float] | None,
         env_hash: str,
         error_sig: str,
     ) -> None:
@@ -350,7 +349,7 @@ class IngestionPipeline:
         )
 
     async def _generate_and_update_reflection(
-        self, episode_id: int, episode_data: EpisodeCreate, tier_override: Optional[ReflectionTier] = None
+        self, episode_id: int, episode_data: EpisodeCreate, tier_override: ReflectionTier | None = None
     ) -> None:
         """
         Generate tiered reflection and persist to KyroDB with retry logic.
@@ -552,8 +551,10 @@ class IngestionPipeline:
         """
         Log failed reflection to dead-letter queue file for manual recovery.
 
-        Dead-letter queue file: data/failed_reflections.log
+        Dead-letter queue file path is configurable via ServiceConfig.
         Format: JSON lines with timestamp, episode_id, customer_id, failure_reason, reflection
+        
+        Includes automatic file rotation when size exceeds configured limit.
 
         This enables manual recovery of reflections that failed persistence.
 
@@ -566,11 +567,24 @@ class IngestionPipeline:
         import json
         from pathlib import Path
 
-        dead_letter_path = Path("data/failed_reflections.log")
+        # Get configurable path from settings
+        dead_letter_path = Path(self.settings.service.dead_letter_queue_path)
 
         try:
             # Ensure data directory exists
             dead_letter_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Check file size and rotate if needed
+            max_size_bytes = self.settings.service.dead_letter_queue_max_size_mb * 1024 * 1024
+            if dead_letter_path.exists() and dead_letter_path.stat().st_size >= max_size_bytes:
+                # Rotate: rename current file with timestamp
+                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                rotated_path = dead_letter_path.with_suffix(f".{timestamp}.log")
+                dead_letter_path.rename(rotated_path)
+                logger.info(
+                    f"Rotated dead letter queue file: {dead_letter_path} -> {rotated_path} "
+                    f"(size exceeded {max_size_bytes} bytes)"
+                )
 
             # Serialize reflection to JSON-safe format
             reflection_data = {
@@ -598,7 +612,7 @@ class IngestionPipeline:
 
             # Create dead-letter entry
             entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "episode_id": episode_id,
                 "customer_id": customer_id,
                 "failure_reason": failure_reason,
