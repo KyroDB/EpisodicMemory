@@ -1,5 +1,5 @@
 # Core framework
-fastapi==0.109.0
+fastapi==0.109.1
 uvicorn[standard]==0.27.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
@@ -7,12 +7,12 @@ pydantic-settings==2.1.0
 # KyroDB gRPC client
 grpcio==1.60.0
 grpcio-tools==1.60.0
-protobuf==4.25.0
+protobuf==4.25.8
 
 # Embedding models
 sentence-transformers==2.3.0
 torch==2.1.0
-transformers==4.36.0
+transformers==4.48.0
 Pillow==10.2.0
 
 # LLM clients (multi-perspective reflection)
@@ -32,12 +32,15 @@ pybreaker==1.0.1
 tenacity==8.2.3
 
 # Development
-pytest==7.4.0
+pytest==7.4.3
 pytest-asyncio==0.23.0
 pytest-mock==3.12.0
+pytest-cov==4.1.0  # For coverage reports
 httpx==0.25.1  # For FastAPI testing
 black==24.1.0
 ruff==0.1.14
+mypy==1.8.0
+isort==5.13.0
 
 
 
